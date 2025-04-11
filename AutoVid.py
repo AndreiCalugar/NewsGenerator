@@ -6,6 +6,17 @@ import os
 import sqlite3
 import openai
 from dotenv import load_dotenv
+import re
+import tempfile
+import shutil
+
+# Try to import moviepy, but continue if it fails
+try:
+    from moviepy.editor import VideoFileClip, concatenate_videoclips, TextClip, CompositeVideoClip
+    MOVIEPY_AVAILABLE = True
+except ImportError:
+    print("Warning: MoviePy not available. Video creation functionality will be disabled.")
+    MOVIEPY_AVAILABLE = False
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,13 +29,13 @@ class GNewsAPI:
             raise ValueError("GNews API key is required")
         self.base_url = "https://gnews.io/api/v4"
     
-    def get_top_headlines(self, country="ro", language="ro", max_results=5):
+    def get_top_headlines(self, country="us", language="en", max_results=5):
         """
-        Get top headlines from Romania (or another country).
+        Get top headlines from the United States (or another country).
         
         Parameters:
-        - country: Two-letter ISO 3166-1 country code (default: 'ro' for Romania)
-        - language: Two-letter ISO 639-1 language code (default: 'ro' for Romanian)
+        - country: Two-letter ISO 3166-1 country code (default: 'us' for United States)
+        - language: Two-letter ISO 639-1 language code (default: 'en' for English)
         - max_results: Number of results to return (default: 5)
         """
         url = f"{self.base_url}/top-headlines"
@@ -66,14 +77,14 @@ class GNewsAPI:
             print(f"Network error: {e}")
             raise
     
-    def search_news(self, query, language="ro", country="ro", max_results=5):
+    def search_news(self, query, language="en", country="us", max_results=5):
         """
         Search for news articles with a specific query.
         
         Parameters:
         - query: Keywords or phrases to search for
-        - language: Two-letter ISO 639-1 language code (default: 'ro' for Romanian)
-        - country: Two-letter ISO 3166-1 country code (default: 'ro' for Romania)
+        - language: Two-letter ISO 639-1 language code (default: 'en' for English)
+        - country: Two-letter ISO 3166-1 country code (default: 'us' for United States)
         - max_results: Number of results to return (default: 5)
         """
         url = f"{self.base_url}/search"
@@ -120,11 +131,11 @@ class GNewsAPI:
 class RSSNewsScraper:
     def __init__(self):
         self.rss_feeds = {
-            "Digi24": "https://www.digi24.ro/rss",
-            "HotNews": "https://www.hotnews.ro/rss",
-            "Mediafax": "https://www.mediafax.ro/rss",
-            "ProTV": "https://stirileprotv.ro/rss",
-            "Adevarul": "https://adevarul.ro/rss/"
+            "CNN": "http://rss.cnn.com/rss/cnn_topstories.rss",
+            "New York Times": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+            "Washington Post": "http://feeds.washingtonpost.com/rss/national",
+            "USA Today": "http://rssfeeds.usatoday.com/usatoday-NewsTopStories",
+            "NPR": "https://feeds.npr.org/1001/rss.xml"
         }
     
     def get_top_headlines(self, limit=5):
@@ -197,6 +208,18 @@ class NewsDatabase:
                 script_text TEXT NOT NULL,
                 generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (news_id) REFERENCES news_articles (id)
+            )
+            ''')
+            
+            # Create videos table
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                script_id INTEGER,
+                video_path TEXT NOT NULL,
+                keywords TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (script_id) REFERENCES scripts (id)
             )
             ''')
             
@@ -313,6 +336,65 @@ class NewsDatabase:
             print(f"Error fetching recent scripts: {e}")
             return []
     
+    def add_video(self, script_id, video_path, keywords):
+        """Add a generated video to the database"""
+        try:
+            keywords_str = ','.join(keywords) if isinstance(keywords, list) else keywords
+            
+            self.cursor.execute(
+                "INSERT INTO videos (script_id, video_path, keywords) VALUES (?, ?, ?)",
+                (script_id, video_path, keywords_str)
+            )
+            self.conn.commit()
+            video_id = self.cursor.lastrowid
+            print(f"Added video for script {script_id} with video ID {video_id}")
+            return video_id
+        except sqlite3.Error as e:
+            print(f"Error adding video to database: {e}")
+            self.conn.rollback()
+            return None
+    
+    def get_scripts_without_videos(self, limit=5):
+        """Get scripts that don't have associated videos yet"""
+        try:
+            self.cursor.execute(
+                """
+                SELECT s.id, s.news_id, n.title, s.script_text 
+                FROM scripts s
+                JOIN news_articles n ON s.news_id = n.id
+                LEFT JOIN videos v ON s.id = v.script_id
+                WHERE v.id IS NULL
+                ORDER BY s.generated_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            scripts = self.cursor.fetchall()
+            return scripts
+        except sqlite3.Error as e:
+            print(f"Error fetching scripts without videos: {e}")
+            return []
+    
+    def get_recent_videos(self, limit=5):
+        """Get recently created videos with their associated article titles and scripts"""
+        try:
+            self.cursor.execute(
+                """
+                SELECT v.id, n.title, s.script_text, v.video_path, v.keywords, v.created_at 
+                FROM videos v
+                JOIN scripts s ON v.script_id = s.id
+                JOIN news_articles n ON s.news_id = n.id
+                ORDER BY v.created_at DESC
+                LIMIT ?
+                """,
+                (limit,)
+            )
+            videos = self.cursor.fetchall()
+            return videos
+        except sqlite3.Error as e:
+            print(f"Error fetching recent videos: {e}")
+            return []
+    
     def close(self):
         """Close the database connection"""
         if self.conn:
@@ -343,7 +425,7 @@ class ScriptGenerator:
             2. Focus ONLY on the news content - no greetings, introductions, or sign-offs
             3. Cover the key points from the description in a clear, direct manner
             4. Use a professional news tone suitable for broadcast
-            5. Be in Romanian language
+            5. Be in English language
             6. Start and end with the news content itself - no "hello", "welcome", "goodbye" or similar phrases
             
             Format the script as plain text that could be read by a news presenter.
@@ -366,6 +448,353 @@ class ScriptGenerator:
             print(f"Error generating script: {e}")
             return f"Failed to generate script for '{title}'. Error: {str(e)}"
 
+class KeywordExtractor:
+    def __init__(self, api_key=None):
+        # Get API key from environment variable
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("OpenAI API key is required for keyword extraction")
+        
+        openai.api_key = self.api_key
+    
+    def extract_keywords(self, title, description, max_keywords=5):
+        """Extract relevant keywords from news title and description"""
+        try:
+            prompt = f"""
+            Extract {max_keywords} keywords from this news article that would be useful for finding relevant stock videos.
+            
+            Include a mix of:
+            1. Specific keywords directly related to the article topic
+            2. Generic visual concepts that represent the article's theme (like "business meeting" for corporate news)
+            3. Emotional or atmospheric terms that capture the mood (like "celebration" or "tension")
+            
+            Title: {title}
+            
+            Description: {description}
+            
+            Return ONLY the keywords separated by commas, with no additional text.
+            Make sure the keywords are good for video search on stock footage sites.
+            
+            Example output format: keyword1, keyword2, keyword3, keyword4, keyword5
+            """
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a keyword extraction tool that generates effective search terms for finding stock videos related to news articles. You provide a mix of specific and generic visual concepts."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=100,
+                temperature=0.5
+            )
+            
+            keywords = response.choices[0].message.content.strip()
+            # Split by comma and strip whitespace
+            keyword_list = [k.strip() for k in keywords.split(',')]
+            
+            # Add some generic fallback keywords if we don't have enough
+            fallback_keywords = ["news", "information", "report", "media", "journalism", 
+                                "broadcast", "current events", "documentary", "coverage"]
+            
+            # Ensure we have enough keywords by adding fallbacks if needed
+            while len(keyword_list) < max_keywords and fallback_keywords:
+                fallback = fallback_keywords.pop(0)
+                if fallback not in keyword_list:
+                    keyword_list.append(fallback)
+            
+            return keyword_list
+            
+        except Exception as e:
+            print(f"Error extracting keywords: {e}")
+            # Fallback: extract nouns from title and description
+            words = re.findall(r'\b\w+\b', f"{title} {description}")
+            # Filter out short words and common stop words
+            stop_words = ['the', 'and', 'or', 'in', 'on', 'at', 'to', 'a', 'an', 'for', 'with', 'by', 'is', 'are', 'was', 'were']
+            keywords = [w for w in words if len(w) > 3 and w.lower() not in stop_words]
+            
+            # Add some generic fallback keywords
+            generic_keywords = ["news", "information", "report", "media"]
+            keywords.extend(generic_keywords)
+            
+            # Return unique keywords up to max_keywords
+            unique_keywords = list(dict.fromkeys(keywords))  # Remove duplicates while preserving order
+            return unique_keywords[:max_keywords]
+    
+    def enhance_video_search(self, keywords, article_category=None):
+        """
+        Enhance keywords for better video search results
+        
+        Parameters:
+        - keywords: List of initial keywords
+        - article_category: Optional category of the article (politics, sports, etc.)
+        
+        Returns:
+        - Enhanced list of keywords with visual terms added
+        """
+        # Define visual enhancers by category
+        visual_enhancers = {
+            "politics": ["podium", "flag", "government building", "press conference", "debate"],
+            "business": ["office", "meeting", "handshake", "stock market", "corporate"],
+            "technology": ["computer", "digital", "innovation", "laboratory", "device"],
+            "sports": ["stadium", "athlete", "competition", "game", "training"],
+            "health": ["hospital", "medical", "doctor", "patient", "healthcare"],
+            "environment": ["nature", "landscape", "climate", "pollution", "conservation"],
+            "general": ["city", "people", "crowd", "building", "street", "skyline"]
+        }
+        
+        enhanced_keywords = keywords.copy()
+        
+        # If we know the category, add some visual enhancers from that category
+        if article_category and article_category.lower() in visual_enhancers:
+            category_enhancers = visual_enhancers[article_category.lower()]
+            for enhancer in category_enhancers[:2]:  # Add up to 2 category-specific enhancers
+                if enhancer not in enhanced_keywords:
+                    enhanced_keywords.append(enhancer)
+        
+        # Always add some general visual enhancers
+        for enhancer in visual_enhancers["general"]:
+            if enhancer not in enhanced_keywords and len(enhanced_keywords) < 8:
+                enhanced_keywords.append(enhancer)
+        
+        return enhanced_keywords[:8]  # Limit to 8 keywords
+
+class PexelsAPI:
+    def __init__(self, api_key=None):
+        # Use the provided API key or try to get from environment
+        self.api_key = api_key or os.environ.get("PEXELS_API_KEY")
+        if not self.api_key:
+            raise ValueError("Pexels API key is required")
+        self.base_url = "https://api.pexels.com/videos"
+        self.headers = {
+            "Authorization": self.api_key
+        }
+    
+    def search_videos(self, query, per_page=5, orientation="landscape", min_duration=5, max_duration=20):
+        """
+        Search for videos on Pexels based on a query
+        
+        Parameters:
+        - query: Search term
+        - per_page: Number of results to return (default: 5)
+        - orientation: Video orientation (landscape, portrait, square)
+        - min_duration: Minimum video duration in seconds
+        - max_duration: Maximum video duration in seconds
+        """
+        url = f"{self.base_url}/search"
+        
+        params = {
+            "query": query,
+            "per_page": per_page,
+            "orientation": orientation,
+            "size": "medium",  # Prefer medium-sized videos for better quality
+        }
+        
+        try:
+            print(f"Searching Pexels for videos with query: '{query}'...")
+            response = requests.get(url, params=params, headers=self.headers)
+            
+            if response.status_code != 200:
+                print(f"Error response: {response.status_code}")
+                print(f"Response content: {response.text}")
+                raise Exception(f"Request failed with status {response.status_code}: {response.text}")
+            
+            videos_data = response.json()
+            
+            # Extract video information
+            videos_list = []
+            for video in videos_data.get("videos", []):
+                # Get the HD or SD file URL
+                video_files = video.get("video_files", [])
+                video_url = None
+                
+                # Try to get HD quality first, then fall back to SD
+                for file in video_files:
+                    if file.get("quality") == "hd" and file.get("width") >= 1280:
+                        video_url = file.get("link")
+                        break
+                
+                # If no HD, get any file
+                if not video_url and video_files:
+                    video_url = video_files[0].get("link")
+                
+                # Check if the video duration is within our desired range
+                duration = video.get("duration", 0)
+                if video_url and min_duration <= duration <= max_duration:
+                    videos_list.append({
+                        "id": video.get("id"),
+                        "url": video_url,
+                        "duration": duration,
+                        "width": video.get("width"),
+                        "height": video.get("height"),
+                        "user": video.get("user", {}).get("name"),
+                        "preview": video.get("image"),
+                        "query": query  # Store the query that found this video
+                    })
+            
+            return videos_list
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Network error: {e}")
+            return []
+
+class VideoCreator:
+    def __init__(self, output_dir="videos"):
+        self.output_dir = output_dir
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        if not MOVIEPY_AVAILABLE:
+            print("Warning: MoviePy is not available. Video creation will be limited to downloading only.")
+    
+    def download_video(self, url, output_path):
+        """Download a video from URL to the specified path"""
+        try:
+            print(f"Downloading video from {url}...")
+            response = requests.get(url, stream=True)
+            
+            if response.status_code != 200:
+                print(f"Error downloading video: {response.status_code}")
+                return False
+            
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"Video downloaded to {output_path}")
+            return True
+            
+        except Exception as e:
+            print(f"Error downloading video: {e}")
+            return False
+    
+    def create_video(self, script, videos, output_filename=None):
+        """
+        Create a video by combining clips with the script
+        
+        Parameters:
+        - script: The script text to use for the video
+        - videos: List of video information dictionaries from Pexels API
+        - output_filename: Name for the output file (optional)
+        """
+        if not MOVIEPY_AVAILABLE:
+            print("Cannot create video: MoviePy is not available.")
+            print("Downloading individual videos instead...")
+            
+            if not videos:
+                print("No videos available to download")
+                return None
+            
+            # Create a directory for the downloaded videos
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            download_dir = os.path.join(self.output_dir, f"downloads_{timestamp}")
+            os.makedirs(download_dir, exist_ok=True)
+            
+            # Download videos
+            downloaded_videos = []
+            for i, video in enumerate(videos):
+                video_path = os.path.join(download_dir, f"video_{i}.mp4")
+                if self.download_video(video["url"], video_path):
+                    downloaded_videos.append(video_path)
+            
+            if not downloaded_videos:
+                print("Failed to download any videos")
+                return None
+            
+            # Save the script to a text file
+            script_path = os.path.join(download_dir, "script.txt")
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(script)
+            
+            print(f"Downloaded {len(downloaded_videos)} videos to {download_dir}")
+            print(f"Script saved to {script_path}")
+            
+            return download_dir
+        
+        # Original implementation when MoviePy is available
+        if not videos:
+            print("No videos available to create the video")
+            return None
+        
+        if not output_filename:
+            # Generate a filename based on timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"news_video_{timestamp}.mp4"
+        
+        output_path = os.path.join(self.output_dir, output_filename)
+        
+        # Create a temporary directory for downloaded videos
+        temp_dir = tempfile.mkdtemp()
+        downloaded_videos = []
+        
+        try:
+            # Download videos
+            for i, video in enumerate(videos):
+                video_path = os.path.join(temp_dir, f"video_{i}.mp4")
+                if self.download_video(video["url"], video_path):
+                    downloaded_videos.append(video_path)
+            
+            if not downloaded_videos:
+                print("Failed to download any videos")
+                return None
+            
+            # Load video clips
+            clips = []
+            total_duration = 0
+            target_duration = 60  # Target 60 seconds for the final video
+            
+            for video_path in downloaded_videos:
+                clip = VideoFileClip(video_path)
+                # Limit each clip to a portion of the target duration
+                clip_duration = min(clip.duration, target_duration / len(downloaded_videos))
+                clip = clip.subclip(0, clip_duration)
+                clips.append(clip)
+                total_duration += clip_duration
+                
+                # If we have enough duration, stop adding clips
+                if total_duration >= target_duration:
+                    break
+            
+            # Create the final video
+            final_clip = concatenate_videoclips(clips, method="compose")
+            
+            # Add text overlay with the script
+            # Split script into chunks for better readability
+            script_chunks = [script[i:i+100] for i in range(0, len(script), 100)]
+            
+            # Create text clips for each chunk
+            text_clips = []
+            chunk_duration = final_clip.duration / len(script_chunks)
+            
+            for i, chunk in enumerate(script_chunks):
+                txt_clip = TextClip(
+                    chunk, 
+                    fontsize=24, 
+                    color='white',
+                    bg_color='rgba(0,0,0,0.5)',
+                    size=(final_clip.w * 0.9, None),
+                    method='caption'
+                )
+                txt_clip = txt_clip.set_position(('center', 'bottom')).set_duration(chunk_duration)
+                txt_clip = txt_clip.set_start(i * chunk_duration)
+                text_clips.append(txt_clip)
+            
+            # Combine video with text overlays
+            final_video = CompositeVideoClip([final_clip] + text_clips)
+            
+            # Write the final video to file
+            final_video.write_videofile(output_path, codec='libx264', audio_codec='aac')
+            
+            print(f"Video created successfully: {output_path}")
+            return output_path
+            
+        except Exception as e:
+            print(f"Error creating video: {e}")
+            return None
+        
+        finally:
+            # Clean up temporary directory
+            shutil.rmtree(temp_dir)
+
 # Simple test script
 if __name__ == "__main__":
     print("Initializing News System...")
@@ -382,32 +811,32 @@ if __name__ == "__main__":
         print("\n--- TRYING GNEWS API ---")
         news_api = GNewsAPI()
         
-        # First try searching for Romania news
-        print("Searching for Romania news...")
+        # First try searching for US news
+        print("Searching for US news...")
         try:
-            romania_news = news_api.search_news(query="România", max_results=5)
-            if not romania_news.empty:
-                print("\nTop news about Romania:")
-                for i, (_, article) in enumerate(romania_news.iterrows(), 1):
+            us_news = news_api.search_news(query="United States", max_results=5)
+            if not us_news.empty:
+                print("\nTop news about the United States:")
+                for i, (_, article) in enumerate(us_news.iterrows(), 1):
                     print(f"{i}. {article['title']} ({article['source']})")
                     print(f"   {article['description'][:100]}...")
                     print(f"   URL: {article['url']}")
                     print()
                 
-                articles_df = romania_news
-                top_titles = romania_news["title"].tolist()
+                articles_df = us_news
+                top_titles = us_news["title"].tolist()
             else:
-                raise Exception("No results found for Romania search")
+                raise Exception("No results found for US search")
                 
         except Exception as e:
-            print(f"Error searching for Romania news: {e}")
+            print(f"Error searching for US news: {e}")
             
             # Try top headlines instead
             print("\nFetching top headlines...")
-            headlines = news_api.get_top_headlines(country="ro", max_results=5)
+            headlines = news_api.get_top_headlines(country="us", max_results=5)
             
             if not headlines.empty:
-                print("\nTop 5 news headlines in Romania:")
+                print("\nTop 5 news headlines in the United States:")
                 for i, (_, article) in enumerate(headlines.iterrows(), 1):
                     print(f"{i}. {article['title']} ({article['source']})")
                     print(f"   {article['description'][:100]}...")
@@ -446,20 +875,20 @@ if __name__ == "__main__":
                 
         except Exception as e:
             print(f"Error with RSS feeds: {e}")
-            print("Falling back to predefined Romanian news topics...")
-            romanian_topics = [
-                "Politică România", 
-                "Economie România", 
-                "Sport România", 
-                "Sănătate România", 
-                "Tehnologie România"
+            print("Falling back to predefined US news topics...")
+            us_topics = [
+                "US Politics", 
+                "US Economy", 
+                "US Sports", 
+                "US Health", 
+                "US Technology"
             ]
             
-            print("\nPredefined Romanian news topics:")
-            for i, topic in enumerate(romanian_topics, 1):
+            print("\nPredefined US news topics:")
+            for i, topic in enumerate(us_topics, 1):
                 print(f"{i}. {topic}")
             
-            top_titles = romanian_topics
+            top_titles = us_topics
 
     # Print the final list of top titles
     print("\nFinal list of top titles:")
@@ -472,18 +901,26 @@ if __name__ == "__main__":
         added_ids = db.add_news_articles(articles_df)
         print(f"Added {len(added_ids)} articles to database")
     
-    # Interactive menu for script generation
+    # Interactive menu for script generation and video creation
     try:
         # Use environment variable for API key
         script_generator = ScriptGenerator()
+        keyword_extractor = KeywordExtractor()
+        pexels_api = PexelsAPI()
+        video_creator = VideoCreator()
         
         while True:
-            print("\n--- SCRIPT GENERATION MENU ---")
+            print("\n--- MAIN MENU ---")
             print("1. Generate script for a new article")
-            print("2. View recent scripts")
-            print("3. Exit")
+            if MOVIEPY_AVAILABLE:
+                print("2. Create video for an article")
+            else:
+                print("2. Download videos for an article (MoviePy not available)")
+            print("3. View recent scripts")
+            print("4. View recent videos")
+            print("5. Exit")
             
-            choice = input("\nEnter your choice (1-3): ")
+            choice = input("\nEnter your choice (1-5): ")
             
             if choice == "1":
                 # Get unused articles
@@ -526,6 +963,102 @@ if __name__ == "__main__":
                     print("Please enter a valid number.")
             
             elif choice == "2":
+                # Get scripts without videos
+                scripts_without_videos = db.get_scripts_without_videos()
+                
+                if not scripts_without_videos:
+                    print("No scripts available for video creation. Please generate scripts first.")
+                    continue
+                
+                print("\nAvailable scripts for video creation:")
+                for i, (script_id, news_id, title, _) in enumerate(scripts_without_videos, 1):
+                    print(f"{i}. [{script_id}] {title}")
+                
+                script_choice = input("\nEnter the number of the script to use (or 0 to cancel): ")
+                if script_choice == "0":
+                    continue
+                
+                try:
+                    script_index = int(script_choice) - 1
+                    if 0 <= script_index < len(scripts_without_videos):
+                        script_id, news_id, title, script_text = scripts_without_videos[script_index]
+                        
+                        # Get the full article details for keyword extraction
+                        db.cursor.execute(
+                            "SELECT title, description FROM news_articles WHERE id = ?",
+                            (news_id,)
+                        )
+                        article = db.cursor.fetchone()
+                        
+                        if not article:
+                            print("Article not found in database.")
+                            continue
+                        
+                        article_title, article_description = article
+                        
+                        print(f"\nExtracting keywords for: {article_title}")
+                        keywords = keyword_extractor.extract_keywords(article_title, article_description)
+                        print(f"Initial keywords: {', '.join(keywords)}")
+
+                        # Try to determine the article category
+                        article_category = "general"
+                        category_keywords = ["politics", "business", "technology", "sports", "health", "environment"]
+                        for category in category_keywords:
+                            if category.lower() in article_title.lower() or category.lower() in article_description.lower():
+                                article_category = category
+                                break
+
+                        # Enhance keywords for better video search
+                        enhanced_keywords = keyword_extractor.enhance_video_search(keywords, article_category)
+                        print(f"Enhanced keywords for video search: {', '.join(enhanced_keywords)}")
+
+                        # Search for videos for each keyword
+                        all_videos = []
+                        for keyword in enhanced_keywords:
+                            videos = pexels_api.search_videos(keyword, per_page=2)
+                            if videos:
+                                print(f"Found {len(videos)} videos for keyword '{keyword}'")
+                                all_videos.extend(videos)
+                                if len(all_videos) >= 5:
+                                    break
+                            else:
+                                print(f"No videos found for keyword '{keyword}'")
+
+                        if not all_videos:
+                            print("No videos found for any of the extracted keywords.")
+                            # Try with more generic keywords as a fallback
+                            generic_keywords = ["news", "information", "media", "people", "city", "business"]
+                            for keyword in generic_keywords:
+                                videos = pexels_api.search_videos(keyword, per_page=2)
+                                if videos:
+                                    print(f"Found {len(videos)} videos for generic keyword '{keyword}'")
+                                    all_videos.extend(videos)
+                                    if len(all_videos) >= 5:
+                                        break
+                            
+                            if not all_videos:
+                                print("Could not find any videos, even with generic keywords.")
+                                continue
+
+                        print(f"\nFound a total of {len(all_videos)} videos for the keywords.")
+
+                        # Create the video
+                        print("\nCreating video...")
+                        video_path = video_creator.create_video(script_text, all_videos)
+
+                        if video_path:
+                            # Add video to database
+                            video_id = db.add_video(script_id, video_path, enhanced_keywords)
+                            if video_id:
+                                print(f"Video created and saved with ID: {video_id}")
+                        else:
+                            print("Failed to create video.")
+                    else:
+                        print("Invalid script number.")
+                except ValueError:
+                    print("Please enter a valid number.")
+            
+            elif choice == "3":
                 recent_scripts = db.get_recent_scripts()
                 
                 if not recent_scripts:
@@ -559,15 +1092,51 @@ if __name__ == "__main__":
                 except ValueError:
                     print("Please enter a valid number.")
             
-            elif choice == "3":
-                print("Exiting script generation menu.")
+            elif choice == "4":
+                recent_videos = db.get_recent_videos()
+                
+                if not recent_videos:
+                    print("No videos found in the database.")
+                    continue
+                
+                print("\nRecent Videos:")
+                for video_id, title, script_text, video_path, keywords, created_at in recent_videos:
+                    print(f"\nVideo ID: {video_id}")
+                    print(f"Article: {title}")
+                    print(f"Created: {created_at}")
+                    print(f"Keywords: {keywords}")
+                    print(f"Video path: {video_path}")
+                    print("-" * 50)
+                
+                video_choice = input("\nEnter a video ID to view details (or 0 to return): ")
+                if video_choice == "0":
+                    continue
+                
+                try:
+                    video_id = int(video_choice)
+                    for v_id, title, script_text, video_path, keywords, created_at in recent_videos:
+                        if v_id == video_id:
+                            print(f"\nFull Details for Video '{title}':")
+                            print("-" * 50)
+                            print(f"Script: {script_text}")
+                            print(f"Keywords: {keywords}")
+                            print(f"Video path: {video_path}")
+                            print("-" * 50)
+                            break
+                    else:
+                        print("Video ID not found.")
+                except ValueError:
+                    print("Please enter a valid number.")
+            
+            elif choice == "5":
+                print("Exiting program.")
                 break
             
             else:
-                print("Invalid choice. Please enter a number between 1 and 3.")
+                print("Invalid choice. Please enter a number between 1 and 5.")
     
     except Exception as e:
-        print(f"Error in script generation menu: {e}")
+        print(f"Error in main menu: {e}")
     
     # Close database connection
     db.close()
