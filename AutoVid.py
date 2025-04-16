@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import re
 import tempfile
 import shutil
+import subprocess
 
 # Try to import moviepy, but continue if it fails
 try:
@@ -481,7 +482,7 @@ class KeywordExtractor:
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a keyword extraction tool that generates effective search terms for finding stock videos related to news articles. You provide a mix of specific and generic visual concepts."},
+                    {"role": "system", "content": "You are a keyword extraction tool that generates effective search termsjj for finding stock videos related to news articles. You provide a mix of specific and generic visual concepts."},
                     {"role": "user", "content": prompt}
                 ],
                 max_tokens=100,
@@ -597,7 +598,7 @@ class PexelsAPI:
                 print(f"Error response: {response.status_code}")
                 print(f"Response content: {response.text}")
                 raise Exception(f"Request failed with status {response.status_code}: {response.text}")
-            
+            1
             videos_data = response.json()
             
             # Extract video information
@@ -643,8 +644,54 @@ class VideoCreator:
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
         
+        # Find FFmpeg executable
+        self.ffmpeg_path = self.find_ffmpeg()
+        if self.ffmpeg_path:
+            self.ffmpeg_available = True
+            print(f"FFmpeg found at: {self.ffmpeg_path}")
+        else:
+            self.ffmpeg_available = False
+            print("FFmpeg not found. Video creation will be limited to downloading only.")
+        
         if not MOVIEPY_AVAILABLE:
-            print("Warning: MoviePy is not available. Video creation will be limited to downloading only.")
+            print("Warning: MoviePy not available. Will try to use FFmpeg directly for video creation.")
+    
+    def find_ffmpeg(self):
+        """Find the FFmpeg executable path"""
+        # Common locations for FFmpeg
+        possible_paths = [
+            "ffmpeg",                          # If in PATH
+            "C:\\ffmpeg\\bin\\ffmpeg.exe",     # Common Windows install location
+            "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+            "C:\\Program Files\\ffmpeg\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffmpeg.exe",  # Your specific path
+            os.path.expanduser("~/ffmpeg/bin/ffmpeg"),
+            os.path.expanduser("~/.local/bin/ffmpeg"),
+            "/usr/bin/ffmpeg",                 # Linux/Mac locations
+            "/usr/local/bin/ffmpeg",
+        ]
+        
+        # Try to find ffmpeg in the possible locations
+        for path in possible_paths:
+            try:
+                print(f"Checking for FFmpeg at: {path}")
+                result = subprocess.run([path, "-version"], 
+                                       stdout=subprocess.PIPE, 
+                                       stderr=subprocess.PIPE, 
+                                       shell=True)
+                if result.returncode == 0:
+                    print(f"FFmpeg found at: {path}")
+                    return path
+            except Exception as e:
+                print(f"Error checking {path}: {e}")
+                continue
+        
+        # Ask the user for the FFmpeg path if not found
+        print("FFmpeg not found in common locations.")
+        user_path = input("Please enter the full path to ffmpeg executable (or press Enter to skip): ")
+        if user_path and os.path.exists(user_path):
+            return user_path
+        
+        return None
     
     def download_video(self, url, output_path):
         """Download a video from URL to the specified path"""
@@ -667,6 +714,94 @@ class VideoCreator:
             print(f"Error downloading video: {e}")
             return False
     
+    def create_simple_video(self, script, videos, output_filename=None):
+        """
+        Create a simple video from the first available clip with text overlay
+        
+        Parameters:
+        - script: The script text to use for the video
+        - videos: List of video information dictionaries from Pexels API
+        - output_filename: Name for the output file (optional)
+        """
+        if not videos:
+            print("No videos available to create the video")
+            return None
+        
+        if not self.ffmpeg_available:
+            print("FFmpeg not available. Cannot create video.")
+            return None
+        
+        if not output_filename:
+            # Generate a filename based on timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_filename = f"news_video_{timestamp}.mp4"
+        
+        output_path = os.path.join(self.output_dir, output_filename)
+        
+        # Create a temporary directory for downloaded videos
+        temp_dir = tempfile.mkdtemp()
+        
+        try:
+            # Download just the first video
+            first_video = videos[0]
+            video_path = os.path.join(temp_dir, "video.mp4")
+            
+            if not self.download_video(first_video["url"], video_path):
+                print("Failed to download video")
+                return None
+            
+            print(f"Successfully downloaded video to {video_path}")
+            
+            # Save the script to a text file alongside the video
+            script_path = output_path.replace('.mp4', '_script.txt')
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(script)
+            print(f"Script saved to {script_path}")
+            
+            # Create a simple video - just trim the video
+            simple_cmd = [
+                self.ffmpeg_path,
+                "-v", "warning",  # Only show warnings and errors
+                "-i", video_path,
+                "-t", "30",
+                "-c:v", "copy",
+                "-y",
+                output_path
+            ]
+            
+            print(f"Creating simple video...")
+            
+            try:
+                # Run with minimal output
+                subprocess.run(simple_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+                print(f"✓ Successfully created simple video: {output_path}")
+                return output_path
+            except subprocess.CalledProcessError as e:
+                print(f"✗ Failed to create video")
+                if e.stderr:
+                    error_text = e.stderr.decode()
+                    # Only print the last few lines of the error
+                    error_lines = error_text.strip().split('\n')
+                    if len(error_lines) > 3:
+                        print("Error details: " + '\n'.join(error_lines[-3:]))
+                    else:
+                        print("Error details: " + error_text)
+                return None
+        
+        except Exception as e:
+            print(f"Error creating simple video: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        
+        finally:
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary files in {temp_dir}")
+            except Exception as e:
+                print(f"Error cleaning up temporary directory: {e}")
+
     def create_video(self, script, videos, output_filename=None):
         """
         Create a video by combining clips with the script
@@ -676,41 +811,6 @@ class VideoCreator:
         - videos: List of video information dictionaries from Pexels API
         - output_filename: Name for the output file (optional)
         """
-        if not MOVIEPY_AVAILABLE:
-            print("Cannot create video: MoviePy is not available.")
-            print("Downloading individual videos instead...")
-            
-            if not videos:
-                print("No videos available to download")
-                return None
-            
-            # Create a directory for the downloaded videos
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            download_dir = os.path.join(self.output_dir, f"downloads_{timestamp}")
-            os.makedirs(download_dir, exist_ok=True)
-            
-            # Download videos
-            downloaded_videos = []
-            for i, video in enumerate(videos):
-                video_path = os.path.join(download_dir, f"video_{i}.mp4")
-                if self.download_video(video["url"], video_path):
-                    downloaded_videos.append(video_path)
-            
-            if not downloaded_videos:
-                print("Failed to download any videos")
-                return None
-            
-            # Save the script to a text file
-            script_path = os.path.join(download_dir, "script.txt")
-            with open(script_path, 'w', encoding='utf-8') as f:
-                f.write(script)
-            
-            print(f"Downloaded {len(downloaded_videos)} videos to {download_dir}")
-            print(f"Script saved to {script_path}")
-            
-            return download_dir
-        
-        # Original implementation when MoviePy is available
         if not videos:
             print("No videos available to create the video")
             return None
@@ -727,73 +827,210 @@ class VideoCreator:
         downloaded_videos = []
         
         try:
-            # Download videos
-            for i, video in enumerate(videos):
+            # Download videos (up to 5 for a 30-second video with 6 seconds per clip)
+            max_videos = min(5, len(videos))
+            print(f"Downloading {max_videos} videos for a {max_videos * 6} second video...")
+            
+            for i in range(max_videos):
                 video_path = os.path.join(temp_dir, f"video_{i}.mp4")
-                if self.download_video(video["url"], video_path):
+                if self.download_video(videos[i]["url"], video_path):
                     downloaded_videos.append(video_path)
             
             if not downloaded_videos:
                 print("Failed to download any videos")
                 return None
             
-            # Load video clips
-            clips = []
-            total_duration = 0
-            target_duration = 60  # Target 60 seconds for the final video
+            print(f"Successfully downloaded {len(downloaded_videos)} videos")
             
-            for video_path in downloaded_videos:
-                clip = VideoFileClip(video_path)
-                # Limit each clip to a portion of the target duration
-                clip_duration = min(clip.duration, target_duration / len(downloaded_videos))
-                clip = clip.subclip(0, clip_duration)
-                clips.append(clip)
-                total_duration += clip_duration
+            # Save the script to a text file alongside the video
+            script_path = output_path.replace('.mp4', '_script.txt')
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(script)
+            print(f"Script saved to {script_path}")
+            
+            # Try to concatenate videos
+            if len(downloaded_videos) > 1:
+                print(f"Attempting to concatenate {len(downloaded_videos)} videos (6 seconds each)...")
+                concatenated_video = self.concatenate_videos(downloaded_videos, output_path, script)
                 
-                # If we have enough duration, stop adding clips
-                if total_duration >= target_duration:
-                    break
+                if concatenated_video:
+                    print(f"Successfully created concatenated video: {concatenated_video}")
+                    return concatenated_video
             
-            # Create the final video
-            final_clip = concatenate_videoclips(clips, method="compose")
+            # If concatenation fails or only one video, try the simple approach
+            if len(downloaded_videos) == 1 or not concatenated_video:
+                print("Attempting to create a simple video from the first clip...")
+                simple_video = self.create_simple_video(script, videos, output_filename)
+                
+                if simple_video:
+                    print(f"Successfully created simple video: {simple_video}")
+                    return simple_video
             
-            # Add text overlay with the script
-            # Split script into chunks for better readability
-            script_chunks = [script[i:i+100] for i in range(0, len(script), 100)]
+            # If both approaches fail, fall back to downloading individual videos
+            print("Video creation failed. Saving individual videos instead...")
             
-            # Create text clips for each chunk
-            text_clips = []
-            chunk_duration = final_clip.duration / len(script_chunks)
+            # Create a directory for the downloaded videos
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            download_dir = os.path.join(self.output_dir, f"downloads_{timestamp}")
+            os.makedirs(download_dir, exist_ok=True)
             
-            for i, chunk in enumerate(script_chunks):
-                txt_clip = TextClip(
-                    chunk, 
-                    fontsize=24, 
-                    color='white',
-                    bg_color='rgba(0,0,0,0.5)',
-                    size=(final_clip.w * 0.9, None),
-                    method='caption'
-                )
-                txt_clip = txt_clip.set_position(('center', 'bottom')).set_duration(chunk_duration)
-                txt_clip = txt_clip.set_start(i * chunk_duration)
-                text_clips.append(txt_clip)
+            # Copy downloaded videos to the download directory
+            for i, video_path in enumerate(downloaded_videos):
+                dest_path = os.path.join(download_dir, f"video_{i}.mp4")
+                shutil.copy2(video_path, dest_path)
             
-            # Combine video with text overlays
-            final_video = CompositeVideoClip([final_clip] + text_clips)
+            # Save the script to a text file
+            script_path = os.path.join(download_dir, "script.txt")
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write(script)
             
-            # Write the final video to file
-            final_video.write_videofile(output_path, codec='libx264', audio_codec='aac')
+            print(f"Downloaded {len(downloaded_videos)} videos to {download_dir}")
+            print(f"Script saved to {script_path}")
             
-            print(f"Video created successfully: {output_path}")
-            return output_path
+            return download_dir
             
         except Exception as e:
             print(f"Error creating video: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        
+        finally:
+            # Clean up temporary directory and downloaded videos
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary files in {temp_dir}")
+            except Exception as e:
+                print(f"Error cleaning up temporary directory: {e}")
+
+    def concatenate_videos(self, video_paths, output_path, script_text=None):
+        """
+        Concatenate multiple videos into one continuous video
+        
+        Parameters:
+        - video_paths: List of paths to video files
+        - output_path: Path for the output concatenated video
+        - script_text: Optional script text to add as overlay
+        
+        Returns:
+        - Path to the concatenated video if successful, None otherwise
+        """
+        if not video_paths:
+            print("No videos to concatenate.")
+            return None
+        
+        if not self.ffmpeg_available:
+            print("FFmpeg not available. Cannot concatenate videos.")
+            return None
+        
+        try:
+            # Limit to 5 videos maximum (30 seconds total with 6 seconds each)
+            video_paths = video_paths[:5]
+            print(f"Concatenating {len(video_paths)} videos (6 seconds each)...")
+            
+            # Create a temporary directory for processed videos
+            temp_dir = tempfile.mkdtemp()
+            processed_videos = []
+            
+            # First, process each video to ensure compatibility
+            for i, video_path in enumerate(video_paths):
+                # Limit each video to 6 seconds and ensure consistent format
+                processed_path = os.path.join(temp_dir, f"proc_{i}.mp4")
+                process_cmd = [
+                    self.ffmpeg_path,
+                    "-v", "warning",  # Only show warnings and errors
+                    "-i", video_path,
+                    "-t", "6",  # Limit to 6 seconds
+                    "-vf", "scale=1280:720",  # Standardize resolution
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-crf", "22",
+                    "-y",
+                    processed_path
+                ]
+                
+                print(f"Processing video {i+1}/{len(video_paths)}...")
+                
+                # Run the command with minimal output
+                try:
+                    result = subprocess.run(
+                        process_cmd, 
+                        stdout=subprocess.PIPE, 
+                        stderr=subprocess.PIPE, 
+                        shell=True,
+                        check=True
+                    )
+                    processed_videos.append(processed_path)
+                    print(f"✓ Successfully processed video {i+1}")
+                except subprocess.CalledProcessError as e:
+                    print(f"✗ Error processing video {i+1}")
+                    if e.stderr:
+                        error_text = e.stderr.decode()
+                        # Only print the last few lines of the error
+                        error_lines = error_text.strip().split('\n')
+                        if len(error_lines) > 3:
+                            print("Error details: " + '\n'.join(error_lines[-3:]))
+                        else:
+                            print("Error details: " + error_text)
+            
+            if not processed_videos:
+                print("No videos to concatenate after processing.")
+                return None
+            
+            # Create a file list for concatenation
+            list_file = os.path.join(temp_dir, "file_list.txt")
+            with open(list_file, 'w') as f:
+                for video in processed_videos:
+                    f.write(f"file '{os.path.abspath(video)}'\n")
+            
+            # Run the concatenation command
+            concat_cmd = [
+                self.ffmpeg_path,
+                "-v", "warning",  # Only show warnings and errors
+                "-f", "concat",
+                "-safe", "0",
+                "-i", list_file,
+                "-c", "copy",
+                "-y",
+                output_path
+            ]
+            
+            print(f"Running concatenation command...")
+            
+            try:
+                # Run with minimal output
+                subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+                
+                # Calculate the expected duration (6 seconds per video)
+                expected_duration = len(processed_videos) * 6
+                print(f"✓ Successfully created concatenated video: {output_path} (Expected duration: ~{expected_duration} seconds)")
+                
+                return output_path
+            except subprocess.CalledProcessError as e:
+                print(f"✗ Error creating concatenated video")
+                if e.stderr:
+                    error_text = e.stderr.decode()
+                    # Only print the last few lines of the error
+                    error_lines = error_text.strip().split('\n')
+                    if len(error_lines) > 3:
+                        print("Error details: " + '\n'.join(error_lines[-3:]))
+                    else:
+                        print("Error details: " + error_text)
+                return None
+        
+        except Exception as e:
+            print(f"Error in concatenate_videos: {e}")
+            import traceback
+            traceback.print_exc()
             return None
         
         finally:
             # Clean up temporary directory
-            shutil.rmtree(temp_dir)
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as e:
+                print(f"Error cleaning up temporary directory: {e}")
 
 # Simple test script
 if __name__ == "__main__":

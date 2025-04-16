@@ -18,4 +18,32 @@ env/
 # IDE files
 .idea/
 .vscode/
-*.swp 
+*.swp
+
+# Ignore video files
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+
+# Ignore the videos directory
+/videos/
+/videos/*
+
+# Ignore temporary files
+/tmp/
+temp/
+*.tmp
+
+# Ignore audio files
+*.mp3
+*.wav
+*.aac
+*.m4a
+
+# Ignore database files
+*.db
+*.sqlite
+*.sqlite3 
