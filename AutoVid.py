@@ -22,6 +22,21 @@ except ImportError:
 # Load environment variables from .env file
 load_dotenv()
 
+# Add these imports at the top of your file
+try:
+    import pyttsx3  # For offline TTS
+    PYTTSX3_AVAILABLE = True
+except ImportError:
+    PYTTSX3_AVAILABLE = False
+    print("pyttsx3 not available. Will try other TTS options.")
+
+try:
+    from gtts import gTTS  # Google Text-to-Speech
+    GTTS_AVAILABLE = True
+except ImportError:
+    GTTS_AVAILABLE = False
+    print("gTTS not available. Will try other TTS options.")
+
 class GNewsAPI:
     def __init__(self, api_key=None):
         # Use the provided API key or try to get from environment
@@ -802,17 +817,24 @@ class VideoCreator:
             except Exception as e:
                 print(f"Error cleaning up temporary directory: {e}")
 
-    def create_video(self, script, videos, output_filename=None):
+    def create_video_with_narration(self, script, videos, output_filename=None):
         """
-        Create a video by combining clips with the script
+        Create a video with narration, matching video length to narration length
         
         Parameters:
         - script: The script text to use for the video
         - videos: List of video information dictionaries from Pexels API
         - output_filename: Name for the output file (optional)
+        
+        Returns:
+        - Path to the created video if successful, None otherwise
         """
         if not videos:
             print("No videos available to create the video")
+            return None
+        
+        if not self.ffmpeg_available:
+            print("FFmpeg not available. Cannot create video.")
             return None
         
         if not output_filename:
@@ -821,16 +843,32 @@ class VideoCreator:
             output_filename = f"news_video_{timestamp}.mp4"
         
         output_path = os.path.join(self.output_dir, output_filename)
+        narrated_output_path = output_path.replace('.mp4', '_narrated.mp4')
         
-        # Create a temporary directory for downloaded videos
+        # Create temporary directories
         temp_dir = tempfile.mkdtemp()
-        downloaded_videos = []
         
         try:
-            # Download videos (up to 5 for a 30-second video with 6 seconds per clip)
-            max_videos = min(5, len(videos))
-            print(f"Downloading {max_videos} videos for a {max_videos * 6} second video...")
+            # First, generate the narration to determine its length
+            print("Generating narration from script...")
+            audio_path = os.path.join(temp_dir, "narration.mp3")
+            if not self.generate_speech(script, audio_path):
+                print("Failed to generate speech. Will create video without narration.")
+                return self.create_video(script, videos, output_filename)
             
+            # Get the duration of the narration
+            narration_duration = self.get_audio_duration(audio_path)
+            if not narration_duration:
+                print("Could not determine narration duration. Using default video length.")
+                return self.create_video(script, videos, output_filename)
+            
+            print(f"Narration duration: {narration_duration:.2f} seconds")
+            
+            # Download videos (up to 5)
+            max_videos = min(5, len(videos))
+            print(f"Downloading {max_videos} videos...")
+            
+            downloaded_videos = []
             for i in range(max_videos):
                 video_path = os.path.join(temp_dir, f"video_{i}.mp4")
                 if self.download_video(videos[i]["url"], video_path):
@@ -848,125 +886,40 @@ class VideoCreator:
                 f.write(script)
             print(f"Script saved to {script_path}")
             
-            # Try to concatenate videos
-            if len(downloaded_videos) > 1:
-                print(f"Attempting to concatenate {len(downloaded_videos)} videos (6 seconds each)...")
-                concatenated_video = self.concatenate_videos(downloaded_videos, output_path, script)
-                
-                if concatenated_video:
-                    print(f"Successfully created concatenated video: {concatenated_video}")
-                    return concatenated_video
-            
-            # If concatenation fails or only one video, try the simple approach
-            if len(downloaded_videos) == 1 or not concatenated_video:
-                print("Attempting to create a simple video from the first clip...")
-                simple_video = self.create_simple_video(script, videos, output_filename)
-                
-                if simple_video:
-                    print(f"Successfully created simple video: {simple_video}")
-                    return simple_video
-            
-            # If both approaches fail, fall back to downloading individual videos
-            print("Video creation failed. Saving individual videos instead...")
-            
-            # Create a directory for the downloaded videos
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            download_dir = os.path.join(self.output_dir, f"downloads_{timestamp}")
-            os.makedirs(download_dir, exist_ok=True)
-            
-            # Copy downloaded videos to the download directory
-            for i, video_path in enumerate(downloaded_videos):
-                dest_path = os.path.join(download_dir, f"video_{i}.mp4")
-                shutil.copy2(video_path, dest_path)
-            
-            # Save the script to a text file
-            script_path = os.path.join(download_dir, "script.txt")
-            with open(script_path, 'w', encoding='utf-8') as f:
-                f.write(script)
-            
-            print(f"Downloaded {len(downloaded_videos)} videos to {download_dir}")
-            print(f"Script saved to {script_path}")
-            
-            return download_dir
-            
-        except Exception as e:
-            print(f"Error creating video: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-        
-        finally:
-            # Clean up temporary directory and downloaded videos
-            try:
-                shutil.rmtree(temp_dir)
-                print(f"Cleaned up temporary files in {temp_dir}")
-            except Exception as e:
-                print(f"Error cleaning up temporary directory: {e}")
-
-    def concatenate_videos(self, video_paths, output_path, script_text=None):
-        """
-        Concatenate multiple videos into one continuous video
-        
-        Parameters:
-        - video_paths: List of paths to video files
-        - output_path: Path for the output concatenated video
-        - script_text: Optional script text to add as overlay
-        
-        Returns:
-        - Path to the concatenated video if successful, None otherwise
-        """
-        if not video_paths:
-            print("No videos to concatenate.")
-            return None
-        
-        if not self.ffmpeg_available:
-            print("FFmpeg not available. Cannot concatenate videos.")
-            return None
-        
-        try:
-            # Limit to 5 videos maximum (30 seconds total with 6 seconds each)
-            video_paths = video_paths[:5]
-            print(f"Concatenating {len(video_paths)} videos (6 seconds each)...")
-            
-            # Create a temporary directory for processed videos
-            temp_dir = tempfile.mkdtemp()
+            # Process videos to match narration duration
             processed_videos = []
             
-            # First, process each video to ensure compatibility
-            for i, video_path in enumerate(video_paths):
-                # Limit each video to 6 seconds and ensure consistent format
+            # Calculate how long each clip should be
+            clip_duration = narration_duration / len(downloaded_videos)
+            print(f"Each clip will be approximately {clip_duration:.2f} seconds")
+            
+            # Process each video
+            for i, video_path in enumerate(downloaded_videos):
                 processed_path = os.path.join(temp_dir, f"proc_{i}.mp4")
                 process_cmd = [
                     self.ffmpeg_path,
-                    "-v", "warning",  # Only show warnings and errors
+                    "-v", "warning",
                     "-i", video_path,
-                    "-t", "6",  # Limit to 6 seconds
+                    "-t", str(clip_duration),  # Set duration to match portion of narration
                     "-vf", "scale=1280:720",  # Standardize resolution
                     "-c:v", "libx264",
                     "-preset", "fast",
                     "-crf", "22",
+                    "-an",  # Remove original audio
                     "-y",
                     processed_path
                 ]
                 
-                print(f"Processing video {i+1}/{len(video_paths)}...")
+                print(f"Processing video {i+1}/{len(downloaded_videos)}...")
                 
-                # Run the command with minimal output
                 try:
-                    result = subprocess.run(
-                        process_cmd, 
-                        stdout=subprocess.PIPE, 
-                        stderr=subprocess.PIPE, 
-                        shell=True,
-                        check=True
-                    )
+                    subprocess.run(process_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
                     processed_videos.append(processed_path)
                     print(f"✓ Successfully processed video {i+1}")
                 except subprocess.CalledProcessError as e:
                     print(f"✗ Error processing video {i+1}")
                     if e.stderr:
                         error_text = e.stderr.decode()
-                        # Only print the last few lines of the error
                         error_lines = error_text.strip().split('\n')
                         if len(error_lines) > 3:
                             print("Error details: " + '\n'.join(error_lines[-3:]))
@@ -983,43 +936,57 @@ class VideoCreator:
                 for video in processed_videos:
                     f.write(f"file '{os.path.abspath(video)}'\n")
             
-            # Run the concatenation command
+            # Concatenate the videos
+            silent_output = os.path.join(temp_dir, "silent_output.mp4")
             concat_cmd = [
                 self.ffmpeg_path,
-                "-v", "warning",  # Only show warnings and errors
+                "-v", "warning",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", list_file,
                 "-c", "copy",
                 "-y",
-                output_path
+                silent_output
             ]
             
-            print(f"Running concatenation command...")
-            
+            print("Concatenating videos...")
             try:
-                # Run with minimal output
                 subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
-                
-                # Calculate the expected duration (6 seconds per video)
-                expected_duration = len(processed_videos) * 6
-                print(f"✓ Successfully created concatenated video: {output_path} (Expected duration: ~{expected_duration} seconds)")
-                
-                return output_path
+                print("✓ Videos concatenated successfully")
             except subprocess.CalledProcessError as e:
-                print(f"✗ Error creating concatenated video")
+                print("✗ Error concatenating videos")
                 if e.stderr:
-                    error_text = e.stderr.decode()
-                    # Only print the last few lines of the error
-                    error_lines = error_text.strip().split('\n')
-                    if len(error_lines) > 3:
-                        print("Error details: " + '\n'.join(error_lines[-3:]))
-                    else:
-                        print("Error details: " + error_text)
+                    print("Error details: " + e.stderr.decode())
+                return None
+            
+            # Add the narration to the concatenated video
+            final_cmd = [
+                self.ffmpeg_path,
+                "-v", "warning",
+                "-i", silent_output,
+                "-i", audio_path,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-map", "0:v:0",
+                "-map", "1:a:0",
+                "-shortest",  # End when the shortest input ends
+                "-y",
+                narrated_output_path
+            ]
+            
+            print("Adding narration to video...")
+            try:
+                subprocess.run(final_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+                print(f"✓ Successfully created video with narration: {narrated_output_path}")
+                return narrated_output_path
+            except subprocess.CalledProcessError as e:
+                print("✗ Error adding narration to video")
+                if e.stderr:
+                    print("Error details: " + e.stderr.decode())
                 return None
         
         except Exception as e:
-            print(f"Error in concatenate_videos: {e}")
+            print(f"Error creating video with narration: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -1028,9 +995,144 @@ class VideoCreator:
             # Clean up temporary directory
             try:
                 shutil.rmtree(temp_dir)
-                print(f"Cleaned up temporary directory: {temp_dir}")
+                print(f"Cleaned up temporary files in {temp_dir}")
             except Exception as e:
                 print(f"Error cleaning up temporary directory: {e}")
+
+    def generate_speech(self, text, output_path):
+        """
+        Generate speech audio from text
+        
+        Parameters:
+        - text: The text to convert to speech
+        - output_path: Path to save the audio file
+        
+        Returns:
+        - Path to the generated audio file if successful, None otherwise
+        """
+        print(f"Generating speech for text: '{text[:50]}...'")
+        
+        # Try different TTS engines in order of preference
+        if GTTS_AVAILABLE:
+            try:
+                print("Using Google Text-to-Speech...")
+                tts = gTTS(text=text, lang='en', slow=False)
+                tts.save(output_path)
+                print(f"✓ Speech generated and saved to {output_path}")
+                return output_path
+            except Exception as e:
+                print(f"✗ Error using Google TTS: {e}")
+        
+        if PYTTSX3_AVAILABLE:
+            try:
+                print("Using pyttsx3 for speech generation...")
+                engine = pyttsx3.init()
+                engine.save_to_file(text, output_path)
+                engine.runAndWait()
+                print(f"✓ Speech generated and saved to {output_path}")
+                return output_path
+            except Exception as e:
+                print(f"✗ Error using pyttsx3: {e}")
+        
+        print("No text-to-speech engines available. Please install either gTTS or pyttsx3.")
+        return None
+
+    def get_audio_duration(self, audio_path):
+        """
+        Get the duration of an audio file using FFmpeg
+        
+        Parameters:
+        - audio_path: Path to the audio file
+        
+        Returns:
+        - Duration in seconds (float) or None if error
+        """
+        if not self.ffmpeg_available:
+            print("FFmpeg not available. Cannot determine audio duration.")
+            return None
+        
+        try:
+            # Use FFprobe instead of FFmpeg for getting duration
+            duration_cmd = [
+                self.ffmpeg_path.replace("ffmpeg", "ffprobe"),  # Use ffprobe instead
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                audio_path
+            ]
+            
+            print(f"Running command to get audio duration: {' '.join(duration_cmd)}")
+            
+            # Run the command and capture stdout
+            result = subprocess.run(
+                duration_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=True,
+                check=False
+            )
+            
+            # Parse the JSON output
+            if result.stdout:
+                try:
+                    info = json.loads(result.stdout.decode())
+                    if 'format' in info and 'duration' in info['format']:
+                        duration = float(info['format']['duration'])
+                        print(f"Audio duration detected: {duration:.2f} seconds")
+                        return duration
+                except json.JSONDecodeError:
+                    print("Could not parse ffprobe JSON output")
+            
+            # If ffprobe fails, try a simpler approach with ffmpeg
+            print("Trying alternative method to get duration...")
+            alt_cmd = [
+                self.ffmpeg_path,
+                "-i", audio_path
+            ]
+            
+            result = subprocess.run(
+                alt_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=True,
+                check=False
+            )
+            
+            # Parse the output to find duration
+            stderr = result.stderr.decode()
+            print(f"FFmpeg output: {stderr}")
+            
+            # Look for Duration: 00:00:12.34
+            duration_match = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", stderr)
+            if duration_match:
+                hours, minutes, seconds = duration_match.groups()
+                total_seconds = float(hours) * 3600 + float(minutes) * 60 + float(seconds)
+                print(f"Audio duration detected (method 2): {total_seconds:.2f} seconds")
+                return total_seconds
+            
+            print("Could not determine audio duration. Using default length.")
+            # Return a default duration if we can't determine it
+            return 30.0  # Default to 30 seconds
+        
+        except Exception as e:
+            print(f"Error getting audio duration: {e}")
+            import traceback
+            traceback.print_exc()
+            # Return a default duration if we can't determine it
+            return 30.0  # Default to 30 seconds
+
+    def create_video(self, script, videos, output_filename=None):
+        """
+        Create a video by combining clips with the script and narration
+        
+        Parameters:
+        - script: The script text to use for the video
+        - videos: List of video information dictionaries from Pexels API
+        - output_filename: Name for the output file (optional)
+        """
+        # Use our new method that matches video length to narration
+        return self.create_video_with_narration(script, videos, output_filename)
 
 # Simple test script
 if __name__ == "__main__":
@@ -1281,7 +1383,7 @@ if __name__ == "__main__":
 
                         # Create the video
                         print("\nCreating video...")
-                        video_path = video_creator.create_video(script_text, all_videos)
+                        video_path = video_creator.create_video_with_narration(script_text, all_videos)
 
                         if video_path:
                             # Add video to database
