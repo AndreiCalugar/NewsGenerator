@@ -10,6 +10,8 @@ import re
 import tempfile
 import shutil
 import subprocess
+import math
+import random
 
 # Try to import moviepy, but continue if it fails
 try:
@@ -45,14 +47,14 @@ class GNewsAPI:
             raise ValueError("GNews API key is required")
         self.base_url = "https://gnews.io/api/v4"
     
-    def get_top_headlines(self, country="us", language="en", max_results=5):
+    def get_top_headlines(self, country="us", language="en", max_results=8):
         """
         Get top headlines from the United States (or another country).
         
         Parameters:
         - country: Two-letter ISO 3166-1 country code (default: 'us' for United States)
         - language: Two-letter ISO 639-1 language code (default: 'en' for English)
-        - max_results: Number of results to return (default: 5)
+        - max_results: Number of results to return (default: 8)
         """
         url = f"{self.base_url}/top-headlines"
         
@@ -93,15 +95,15 @@ class GNewsAPI:
             print(f"Network error: {e}")
             raise
     
-    def search_news(self, query, language="en", country="us", max_results=5):
+    def search_news(self, query, language="en", country="us", max_results=8):
         """
-        Search for news articles with a specific query.
+        Search for news articles by keyword
         
         Parameters:
-        - query: Keywords or phrases to search for
+        - query: Search term
         - language: Two-letter ISO 639-1 language code (default: 'en' for English)
         - country: Two-letter ISO 3166-1 country code (default: 'us' for United States)
-        - max_results: Number of results to return (default: 5)
+        - max_results: Number of results to return (default: 8)
         """
         url = f"{self.base_url}/search"
         
@@ -426,43 +428,118 @@ class ScriptGenerator:
         
         openai.api_key = self.api_key
     
-    def generate_script(self, title, description, duration_seconds=60):
-        """Generate a short video script based on news title and description"""
+    def generate_script(self, article_title, article_text=None, max_words=90):
+        """
+        Generate a script for a news video
+        
+        Parameters:
+        - article_title: Title of the news article
+        - article_text: Text of the news article (optional)
+        - max_words: Maximum number of words for the script (90 words ≈ 45 seconds of speech)
+        
+        Returns:
+        - Generated script text
+        """
         try:
-            prompt = f"""
-            Create a short, factual news script for a 30-60 second video about the following topic:
-            
-            Title: {title}
-            
-            Description: {description}
-            
-            The script should:
-            1. Be approximately {duration_seconds} seconds when read aloud
-            2. Focus ONLY on the news content - no greetings, introductions, or sign-offs
-            3. Cover the key points from the description in a clear, direct manner
-            4. Use a professional news tone suitable for broadcast
-            5. Be in English language
-            6. Start and end with the news content itself - no "hello", "welcome", "goodbye" or similar phrases
-            
-            Format the script as plain text that could be read by a news presenter.
-            """
-            
+            # Prepare the prompt
+            if article_text:
+                prompt = f"""Write a concise, factual news script for a 30-45 second video about this article:
+Title: {article_title}
+Content: {article_text}
+
+The script MUST:
+1. Be strictly factual and focused on the news content.
+2. Be no more than {max_words} words (target: 30-45 seconds read aloud).
+3. Start DIRECTLY with the news hook or main point. NO greetings like "Hey there" or "Welcome".
+4. Include only the most important facts from the content.
+5. End DIRECTLY after the last piece of news information. NO sign-offs like "Stay informed" or "Thanks for watching".
+6. Use a professional, direct news reporting tone.
+
+Format: Plain text script only.
+"""
+            else:
+                prompt = f"""Write a concise, factual news script for a 30-45 second video based ONLY on this headline:
+Headline: {article_title}
+
+The script MUST:
+1. Be strictly factual, speculating reasonably based *only* on the headline.
+2. Be no more than {max_words} words (target: 30-45 seconds read aloud).
+3. Start DIRECTLY with the news hook or main point derived from the headline. NO greetings like "Hey there" or "Welcome".
+4. Focus on the likely core subject of the headline.
+5. End DIRECTLY after the last piece of news information or brief summary. NO sign-offs like "Stay informed" or "Thanks for watching".
+6. Use a professional, direct news reporting tone.
+
+Format: Plain text script only.
+"""
+
+            # Get the API key from environment variable (this check might be redundant if already done in __init__)
+            # api_key = os.environ.get("OPENAI_API_KEY")
+            # if not api_key:
+            #     raise ValueError("OpenAI API key not found in environment variables")
+            # openai.api_key = api_key # Already set in __init__
+
+            # Make the API call
+            print("Generating script with OpenAI API...")
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": "You are a professional news writer who creates concise, direct news scripts without any greetings or sign-offs."},
+                    # Updated system message for more directness
+                    {"role": "system", "content": "You are a news script writer creating concise, factual scripts for short videos. You avoid all conversational filler, greetings, and sign-offs, focusing solely on delivering the news information directly."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=500,
-                temperature=0.7
+                max_tokens=250, # Reduced slightly as filler is removed
+                temperature=0.6 # Slightly lower temperature for more factual tone
             )
             
+            # Extract the script from the response
             script = response.choices[0].message.content.strip()
+            
+            # Count words to verify length
+            word_count = len(script.split())
+            print(f"Generated script with {word_count} words (target: {max_words})")
+            
+            # If the script is too long, truncate it
+            if word_count > max_words:
+                print(f"Script is too long ({word_count} words). Truncating to approximately {max_words} words...")
+                
+                # Try to truncate at a sentence boundary
+                sentences = re.split(r'(?<=[.!?])\s+', script)
+                truncated_script = ""
+                current_word_count = 0
+                
+                for sentence in sentences:
+                    sentence_word_count = len(sentence.split())
+                    if current_word_count + sentence_word_count <= max_words:
+                        truncated_script += sentence + " "
+                        current_word_count += sentence_word_count
+                    else:
+                        # Maybe add just the first few words of the next sentence if close?
+                        # Or just break here for simplicity.
+                        break 
+                
+                script = truncated_script.strip()
+                # Ensure no trailing punctuation issues after truncation
+                if script.endswith(('.', '!', '?')): 
+                    pass # Looks okay
+                else:
+                    # Find last punctuation if any
+                    last_punc = -1
+                    for char in reversed(script):
+                        if char in '.!?':
+                            last_punc = script.rfind(char)
+                            break
+                    if last_punc != -1:
+                        script = script[:last_punc+1] # Truncate to last full sentence end
+
+                print(f"Truncated script to {len(script.split())} words")
+            
             return script
             
         except Exception as e:
             print(f"Error generating script: {e}")
-            return f"Failed to generate script for '{title}'. Error: {str(e)}"
+            import traceback
+            traceback.print_exc()
+            return None
 
 class KeywordExtractor:
     def __init__(self, api_key=None):
@@ -581,20 +658,18 @@ class PexelsAPI:
         if not self.api_key:
             raise ValueError("Pexels API key is required")
         self.base_url = "https://api.pexels.com/videos"
-        self.headers = {
-            "Authorization": self.api_key
-        }
-    
-    def search_videos(self, query, per_page=5, orientation="landscape", min_duration=5, max_duration=20):
+
+    def search_videos(self, query, per_page=5, orientation="landscape"):
         """
-        Search for videos on Pexels based on a query
+        Search for videos on Pexels
         
         Parameters:
         - query: Search term
-        - per_page: Number of results to return (default: 5)
-        - orientation: Video orientation (landscape, portrait, square)
-        - min_duration: Minimum video duration in seconds
-        - max_duration: Maximum video duration in seconds
+        - per_page: Number of results per page (default: 5, max: 80)
+        - orientation: landscape, portrait, or square
+        
+        Returns:
+        - List of video information dictionaries
         """
         url = f"{self.base_url}/search"
         
@@ -607,13 +682,13 @@ class PexelsAPI:
         
         try:
             print(f"Searching Pexels for videos with query: '{query}'...")
-            response = requests.get(url, params=params, headers=self.headers)
+            response = requests.get(url, params=params, headers={"Authorization": self.api_key})
             
             if response.status_code != 200:
                 print(f"Error response: {response.status_code}")
                 print(f"Response content: {response.text}")
                 raise Exception(f"Request failed with status {response.status_code}: {response.text}")
-            1
+            
             videos_data = response.json()
             
             # Extract video information
@@ -635,7 +710,7 @@ class PexelsAPI:
                 
                 # Check if the video duration is within our desired range
                 duration = video.get("duration", 0)
-                if video_url and min_duration <= duration <= max_duration:
+                if video_url and 5 <= duration <= 20:
                     videos_list.append({
                         "id": video.get("id"),
                         "url": video_url,
@@ -817,20 +892,20 @@ class VideoCreator:
             except Exception as e:
                 print(f"Error cleaning up temporary directory: {e}")
 
-    def create_video_with_narration(self, script, videos, output_filename=None):
+    def create_video_with_narration(self, script, video_sources, output_filename=None):
         """
-        Create a video with narration, matching video length to narration length
+        Create a video with narration, dividing narration time equally among video clips.
         
         Parameters:
         - script: The script text to use for the video
-        - videos: List of video information dictionaries from Pexels API
+        - video_sources: List of dictionaries, each containing a video 'url' (expects ~5 sources)
         - output_filename: Name for the output file (optional)
         
         Returns:
         - Path to the created video if successful, None otherwise
         """
-        if not videos:
-            print("No videos available to create the video")
+        if not video_sources:
+            print("No video sources available to create the video")
             return None
         
         if not self.ffmpeg_available:
@@ -838,80 +913,71 @@ class VideoCreator:
             return None
         
         if not output_filename:
-            # Generate a filename based on timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             output_filename = f"news_video_{timestamp}.mp4"
         
         output_path = os.path.join(self.output_dir, output_filename)
         narrated_output_path = output_path.replace('.mp4', '_narrated.mp4')
         
-        # Create temporary directories
         temp_dir = tempfile.mkdtemp()
         
         try:
-            # First, generate the narration to determine its length
+            # 1. Generate Narration & Get Duration
             print("Generating narration from script...")
             audio_path = os.path.join(temp_dir, "narration.mp3")
             if not self.generate_speech(script, audio_path):
-                print("Failed to generate speech. Will create video without narration.")
-                return self.create_video(script, videos, output_filename)
-            
-            # Get the duration of the narration
-            narration_duration = self.get_audio_duration(audio_path)
-            if not narration_duration:
-                print("Could not determine narration duration. Using default video length.")
-                return self.create_video(script, videos, output_filename)
-            
-            print(f"Narration duration: {narration_duration:.2f} seconds")
-            
-            # Download videos (up to 5)
-            max_videos = min(5, len(videos))
-            print(f"Downloading {max_videos} videos...")
-            
-            downloaded_videos = []
-            for i in range(max_videos):
-                video_path = os.path.join(temp_dir, f"video_{i}.mp4")
-                if self.download_video(videos[i]["url"], video_path):
-                    downloaded_videos.append(video_path)
-            
-            if not downloaded_videos:
-                print("Failed to download any videos")
+                print("Failed to generate speech. Cannot create narrated video.")
                 return None
             
-            print(f"Successfully downloaded {len(downloaded_videos)} videos")
+            narration_duration = self.get_audio_duration(audio_path)
+            if not narration_duration:
+                print("Could not determine narration duration. Using default 30s.")
+                narration_duration = 30.0
+            print(f"Narration duration: {narration_duration:.2f} seconds")
+
+            # 2. Download Videos
+            print(f"Downloading {len(video_sources)} videos...")
+            downloaded_video_paths = []
+            for i, video_info in enumerate(video_sources):
+                video_path = os.path.join(temp_dir, f"download_{i}.mp4")
+                if self.download_video(video_info["url"], video_path):
+                    downloaded_video_paths.append(video_path)
             
-            # Save the script to a text file alongside the video
+            if not downloaded_video_paths:
+                print("Failed to download any videos from the provided sources.")
+                return None
+            print(f"Successfully downloaded {len(downloaded_video_paths)} videos.")
+
+            # Save the script
             script_path = output_path.replace('.mp4', '_script.txt')
             with open(script_path, 'w', encoding='utf-8') as f:
                 f.write(script)
             print(f"Script saved to {script_path}")
-            
-            # Process videos to match narration duration
+
+            # 3. Process Videos to Match Narration Segments
             processed_videos = []
+            num_clips = len(downloaded_video_paths)
+            clip_duration = narration_duration / num_clips if num_clips > 0 else narration_duration
+            print(f"Each clip will be processed to fit {clip_duration:.2f} seconds.")
             
-            # Calculate how long each clip should be
-            clip_duration = narration_duration / len(downloaded_videos)
-            print(f"Each clip will be approximately {clip_duration:.2f} seconds")
-            
-            # Process each video
-            for i, video_path in enumerate(downloaded_videos):
+            for i, video_path in enumerate(downloaded_video_paths):
                 processed_path = os.path.join(temp_dir, f"proc_{i}.mp4")
+                
+                # FFmpeg command to scale, set duration (padding if needed), remove audio
                 process_cmd = [
                     self.ffmpeg_path,
-                    "-v", "warning",
                     "-i", video_path,
-                    "-t", str(clip_duration),  # Set duration to match portion of narration
-                    "-vf", "scale=1280:720",  # Standardize resolution
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "22",
+                    "-vf", f"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,tpad=stop_mode=clone:stop_duration={clip_duration+1}", # Scale, pad, set fps, pad end
+                    "-t", str(clip_duration), # Trim to exactly clip_duration
                     "-an",  # Remove original audio
+                    "-c:v", "libx264", # Re-encode
+                    "-preset", "fast",
+                    "-crf", "23",
                     "-y",
                     processed_path
                 ]
                 
-                print(f"Processing video {i+1}/{len(downloaded_videos)}...")
-                
+                print(f"Processing video {i+1}/{num_clips}...")
                 try:
                     subprocess.run(process_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
                     processed_videos.append(processed_path)
@@ -920,23 +986,19 @@ class VideoCreator:
                     print(f"✗ Error processing video {i+1}")
                     if e.stderr:
                         error_text = e.stderr.decode()
-                        error_lines = error_text.strip().split('\n')
-                        if len(error_lines) > 3:
-                            print("Error details: " + '\n'.join(error_lines[-3:]))
-                        else:
-                            print("Error details: " + error_text)
+                        print(f"FFmpeg Error: {error_text}")
+                    print("Skipping video due to error.")
             
             if not processed_videos:
-                print("No videos to concatenate after processing.")
+                print("No videos were successfully processed.")
                 return None
-            
-            # Create a file list for concatenation
+
+            # 4. Concatenate Processed Videos
             list_file = os.path.join(temp_dir, "file_list.txt")
             with open(list_file, 'w') as f:
-                for video in processed_videos:
-                    f.write(f"file '{os.path.abspath(video)}'\n")
+                for video_path in processed_videos:
+                    f.write(f"file '{os.path.abspath(video_path)}'\n")
             
-            # Concatenate the videos
             silent_output = os.path.join(temp_dir, "silent_output.mp4")
             concat_cmd = [
                 self.ffmpeg_path,
@@ -944,7 +1006,7 @@ class VideoCreator:
                 "-f", "concat",
                 "-safe", "0",
                 "-i", list_file,
-                "-c", "copy",
+                "-c", "copy", # Copy codec since segments are already encoded
                 "-y",
                 silent_output
             ]
@@ -958,18 +1020,18 @@ class VideoCreator:
                 if e.stderr:
                     print("Error details: " + e.stderr.decode())
                 return None
-            
-            # Add the narration to the concatenated video
+
+            # 5. Add Narration
             final_cmd = [
                 self.ffmpeg_path,
                 "-v", "warning",
                 "-i", silent_output,
                 "-i", audio_path,
-                "-c:v", "copy",
-                "-c:a", "aac",
+                "-c:v", "copy", # Copy video stream
+                "-c:a", "aac",  # Encode audio
                 "-map", "0:v:0",
                 "-map", "1:a:0",
-                "-shortest",  # End when the shortest input ends
+                "-shortest",  # Ensure final video length matches the shorter input
                 "-y",
                 narrated_output_path
             ]
@@ -984,7 +1046,7 @@ class VideoCreator:
                 if e.stderr:
                     print("Error details: " + e.stderr.decode())
                 return None
-        
+
         except Exception as e:
             print(f"Error creating video with narration: {e}")
             import traceback
@@ -1134,6 +1196,192 @@ class VideoCreator:
         # Use our new method that matches video length to narration
         return self.create_video_with_narration(script, videos, output_filename)
 
+    def add_captions_to_video(self, video_path, script_text, output_path=None):
+        """
+        Add captions to a video
+        
+        Parameters:
+        - video_path: Path to the video file
+        - script_text: Text to display as captions
+        - output_path: Path for the output video (optional)
+        
+        Returns:
+        - Path to the video with captions if successful, None otherwise
+        """
+        if not self.ffmpeg_available:
+            print("FFmpeg not available. Cannot add captions.")
+            return None
+        
+        if not output_path:
+            # Generate output filename based on input
+            output_path = video_path.replace('.mp4', '_captioned.mp4')
+        
+        try:
+            # Create a temporary directory
+            temp_dir = tempfile.mkdtemp()
+            
+            # Create a text file with the script
+            text_file = os.path.join(temp_dir, "caption.txt")
+            with open(text_file, 'w', encoding='utf-8') as f:
+                f.write(script_text)
+            
+            # Try a simpler approach - use a scrolling text at the bottom
+            # This is more reliable than trying to time individual chunks
+            
+            print("Adding scrolling caption to video...")
+            
+            # Get video duration to calculate scroll speed
+            duration_cmd = [
+                self.ffmpeg_path,
+                "-i", video_path,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0"
+            ]
+            
+            try:
+                result = subprocess.run(
+                    duration_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    shell=True,
+                    check=True
+                )
+                duration = float(result.stdout.decode().strip())
+                print(f"Video duration: {duration:.2f} seconds")
+            except:
+                # If we can't get the duration, assume 30 seconds
+                duration = 30.0
+                print(f"Could not determine video duration, assuming {duration} seconds")
+            
+            # Break the script into shorter lines for better readability
+            lines = []
+            words = script_text.split()
+            current_line = []
+            
+            for word in words:
+                current_line.append(word)
+                if len(' '.join(current_line)) > 40:  # Max 40 chars per line
+                    lines.append(' '.join(current_line))
+                    current_line = []
+            
+            if current_line:
+                lines.append(' '.join(current_line))
+            
+            # Join lines with newlines
+            formatted_text = '\\n'.join(lines)
+            
+            # Escape special characters
+            formatted_text = formatted_text.replace("'", "\\'").replace(":", "\\:").replace(",", "\\,").replace("\\", "\\\\")
+            
+            # Create a command with a simple text overlay
+            caption_cmd = [
+                self.ffmpeg_path,
+                "-v", "warning",
+                "-i", video_path,
+                "-vf", (
+                    f"drawtext=text='{formatted_text}':"
+                    f"fontcolor=white:fontsize=24:box=1:"
+                    f"boxcolor=black@0.8:boxborderw=5:"
+                    f"x=(w-text_w)/2:y=h-th-50"
+                ),
+                "-c:a", "copy",
+                "-y",
+                output_path
+            ]
+            
+            print(f"Adding caption to video...")
+            
+            # Run with minimal output
+            subprocess.run(caption_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+            print(f"✓ Successfully added caption to video: {output_path}")
+            return output_path
+        
+        except Exception as e:
+            print(f"Error adding captions: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Fall back to the simplest possible method
+            return self.add_simple_text_overlay(video_path, script_text, output_path)
+        
+        finally:
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary files in {temp_dir}")
+            except Exception as e:
+                print(f"Error cleaning up temporary directory: {e}")
+
+    def add_simple_text_overlay(self, video_path, script_text, output_path):
+        """
+        Add a simple text overlay to the video
+        
+        Parameters:
+        - video_path: Path to the video file
+        - script_text: Text to display as overlay
+        - output_path: Path for the output video
+        
+        Returns:
+        - Path to the video with text overlay if successful, None otherwise
+        """
+        try:
+            # Create a temporary directory
+            temp_dir = tempfile.mkdtemp()
+            
+            # Get the first sentence or up to 50 characters
+            first_sentence = re.split(r'(?<=[.!?])\s+', script_text)[0]
+            short_text = first_sentence[:50] + "..." if len(first_sentence) > 50 else first_sentence
+            
+            # Escape special characters
+            short_text = short_text.replace("'", "\\'").replace(":", "\\:").replace(",", "\\,").replace("\\", "\\\\")
+            
+            # Create a simple drawtext filter with better styling
+            text_cmd = [
+                self.ffmpeg_path,
+                "-v", "warning",
+                "-i", video_path,
+                "-vf", (
+                    f"drawtext=text='{short_text}':"
+                    f"fontcolor=white:fontsize=28:box=1:"
+                    f"boxcolor=black@0.8:boxborderw=5:"
+                    f"x=(w-text_w)/2:y=h-th-50"
+                ),
+                "-c:a", "copy",
+                "-y",
+                output_path
+            ]
+            
+            print(f"Adding simple text overlay to video...")
+            
+            # Run with minimal output
+            subprocess.run(text_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+            print(f"✓ Successfully added text overlay to video: {output_path}")
+            return output_path
+        
+        except Exception as e:
+            print(f"Error adding text overlay: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+        
+        finally:
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temporary files in {temp_dir}")
+            except Exception as e:
+                print(f"Error cleaning up temporary directory: {e}")
+
+    def format_srt_time(self, seconds):
+        """Format seconds as HH:MM:SS,mmm for SRT files"""
+        hours = int(seconds // 3600)
+        seconds %= 3600
+        minutes = int(seconds // 60)
+        seconds %= 60
+        milliseconds = int((seconds - int(seconds)) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{milliseconds:03d}"
+
 # Simple test script
 if __name__ == "__main__":
     print("Initializing News System...")
@@ -1153,7 +1401,7 @@ if __name__ == "__main__":
         # First try searching for US news
         print("Searching for US news...")
         try:
-            us_news = news_api.search_news(query="United States", max_results=5)
+            us_news = news_api.search_news(query="United States", max_results=8)
             if not us_news.empty:
                 print("\nTop news about the United States:")
                 for i, (_, article) in enumerate(us_news.iterrows(), 1):
@@ -1172,10 +1420,10 @@ if __name__ == "__main__":
             
             # Try top headlines instead
             print("\nFetching top headlines...")
-            headlines = news_api.get_top_headlines(country="us", max_results=5)
+            headlines = news_api.get_top_headlines(country="us", max_results=8)
             
             if not headlines.empty:
-                print("\nTop 5 news headlines in the United States:")
+                print("\nTop 8 news headlines in the United States:")
                 for i, (_, article) in enumerate(headlines.iterrows(), 1):
                     print(f"{i}. {article['title']} ({article['source']})")
                     print(f"   {article['description'][:100]}...")
@@ -1196,21 +1444,75 @@ if __name__ == "__main__":
             rss_scraper = RSSNewsScraper()
             
             print("Fetching top headlines from Romanian RSS feeds...")
-            rss_headlines = rss_scraper.get_top_headlines(limit=10)
+            rss_headlines = rss_scraper.get_top_headlines(limit=8)
             
             if not rss_headlines.empty:
                 print("\nTop news headlines from Romanian sources:")
-                for i, (_, article) in enumerate(rss_headlines.head(10).iterrows(), 1):
+                for i, (_, article) in enumerate(rss_headlines.iterrows(), 1):
                     print(f"{i}. {article['title']} ({article['source']})")
                     if 'description' in article and article['description']:
                         print(f"   {article['description'][:100]}...")
                     print(f"   URL: {article['url']}")
                     print()
                 
-                articles_df = rss_headlines.head(5)
-                top_titles = rss_headlines["title"].tolist()[:5]
+                articles_df = rss_headlines
+                top_titles = rss_headlines["title"].tolist()[:8]
             else:
-                print("No headlines found from RSS feeds.")
+                print("No headlines found from Romanian RSS feeds.")
+                print("Trying US news sources...")
+                
+                # Try US news sources
+                us_rss_feeds = {
+                    "CNN": "http://rss.cnn.com/rss/cnn_topstories.rss",
+                    "NPR": "https://feeds.npr.org/1001/rss.xml",
+                    "Washington Post": "http://feeds.washingtonpost.com/rss/national",
+                    "New York Times": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
+                    "USA Today": "http://rssfeeds.usatoday.com/usatoday-NewsTopStories"
+                }
+                
+                # Try each US RSS feed
+                for feed_name, feed_url in us_rss_feeds.items():
+                    try:
+                        print(f"\nTrying US RSS feed: {feed_name}")
+                        us_rss_parser = RSSFeedParser(feed_url)
+                        us_feed_articles = us_rss_parser.get_articles(max_results=8)
+                        
+                        if not us_feed_articles.empty:
+                            print(f"\nTop 8 articles from {feed_name}:")
+                            for i, (_, article) in enumerate(us_feed_articles.iterrows(), 1):
+                                print(f"{i}. {article['title']}")
+                                print(f"   {article['description'][:100] if 'description' in article and article['description'] else ''}...")
+                                print(f"   URL: {article['url']}")
+                                print()
+                            
+                            articles_df = us_feed_articles
+                            top_titles = us_feed_articles["title"].tolist()
+                            break
+                        else:
+                            print(f"No articles found in {feed_name} feed.")
+                    except Exception as e:
+                        print(f"Error with {feed_name} RSS feed: {e}")
+                
+                # If still no articles, fall back to predefined topics
+                if not top_titles:
+                    print("No headlines found from US RSS feeds either.")
+                    print("Falling back to predefined US news topics...")
+                    us_topics = [
+                        "US Politics", 
+                        "US Economy", 
+                        "US Sports", 
+                        "US Health", 
+                        "US Technology",
+                        "World News",
+                        "Entertainment News",
+                        "Science News"
+                    ]
+                    
+                    print("\nPredefined US news topics:")
+                    for i, topic in enumerate(us_topics, 1):
+                        print(f"{i}. {topic}")
+                    
+                    top_titles = us_topics
                 
         except Exception as e:
             print(f"Error with RSS feeds: {e}")
@@ -1220,7 +1522,10 @@ if __name__ == "__main__":
                 "US Economy", 
                 "US Sports", 
                 "US Health", 
-                "US Technology"
+                "US Technology",
+                "World News",
+                "Entertainment News",
+                "Science News"
             ]
             
             print("\nPredefined US news topics:")
@@ -1231,7 +1536,7 @@ if __name__ == "__main__":
 
     # Print the final list of top titles
     print("\nFinal list of top titles:")
-    for i, title in enumerate(top_titles[:5], 1):
+    for i, title in enumerate(top_titles[:8], 1):
         print(f"{i}. {title}")
     
     # Add articles to database
@@ -1339,54 +1644,98 @@ if __name__ == "__main__":
                         keywords = keyword_extractor.extract_keywords(article_title, article_description)
                         print(f"Initial keywords: {', '.join(keywords)}")
 
-                        # Try to determine the article category
-                        article_category = "general"
-                        category_keywords = ["politics", "business", "technology", "sports", "health", "environment"]
-                        for category in category_keywords:
-                            if category.lower() in article_title.lower() or category.lower() in article_description.lower():
-                                article_category = category
-                                break
+                        article_category = "general" # Simplified category detection
+                        # ... (keep category detection if desired, or remove)
 
-                        # Enhance keywords for better video search
                         enhanced_keywords = keyword_extractor.enhance_video_search(keywords, article_category)
                         print(f"Enhanced keywords for video search: {', '.join(enhanced_keywords)}")
 
-                        # Search for videos for each keyword
-                        all_videos = []
-                        for keyword in enhanced_keywords:
-                            videos = pexels_api.search_videos(keyword, per_page=2)
+                        # --- Simplified Video Search ---
+                        target_video_count = 5
+                        selected_videos_raw = []
+                        footage_pool_urls = set() # Still useful for avoiding duplicates
+
+                        print(f"\nSearching for up to {target_video_count} videos using keywords...")
+                        keywords_to_search = enhanced_keywords[:target_video_count] # Use first 5 keywords
+
+                        for keyword in keywords_to_search:
+                            if len(selected_videos_raw) >= target_video_count:
+                                break # Stop if we already have 5
+
+                            print(f"Searching Pexels for videos with query: '{keyword}'...")
+                            videos = pexels_api.search_videos(keyword, per_page=3)
                             if videos:
-                                print(f"Found {len(videos)} videos for keyword '{keyword}'")
-                                all_videos.extend(videos)
-                                if len(all_videos) >= 5:
-                                    break
+                                print(f"Found {len(videos)} potential videos for '{keyword}'.")
+                                video_added_for_keyword = False
+                                for video_info in videos:
+                                    video_url = video_info.get('url')
+                                    
+                                    if video_url and video_url.endswith('.mp4'):
+                                        if video_url not in footage_pool_urls:
+                                            print(f"  + Adding video for '{keyword}': {video_url}")
+                                            selected_videos_raw.append({"url": video_url, "keyword": keyword})
+                                            footage_pool_urls.add(video_url)
+                                            video_added_for_keyword = True
+                                            break
+                                        # else: # Optional debug
+                                        #    print(f"  - Skipping video for '{keyword}' (duplicate URL: {video_url})")
+                                    # else: # Optional debug
+                                    #    if not video_url: print(f"  - Skipping video for '{keyword}' (no URL found in video_info)")
+                                    #    else: print(f"  - Skipping video for '{keyword}' (URL not MP4: {video_url})")
+                                if not video_added_for_keyword:
+                                     print(f"  - Could not find a suitable unique video for '{keyword}' from results.")
                             else:
                                 print(f"No videos found for keyword '{keyword}'")
 
-                        if not all_videos:
-                            print("No videos found for any of the extracted keywords.")
-                            # Try with more generic keywords as a fallback
-                            generic_keywords = ["news", "information", "media", "people", "city", "business"]
+                        # Fallback if not enough videos found
+                        if len(selected_videos_raw) < target_video_count:
+                            print(f"\nFound only {len(selected_videos_raw)} videos. Trying generic keywords for the remainder...")
+                            generic_keywords = ["news", "world", "city", "technology", "business", "people"]
+                            random.shuffle(generic_keywords) # Mix them up
+
                             for keyword in generic_keywords:
-                                videos = pexels_api.search_videos(keyword, per_page=2)
+                                if len(selected_videos_raw) >= target_video_count:
+                                    break # Stop if we have 5
+
+                                print(f"Searching Pexels for generic videos with query: '{keyword}'...")
+                                videos = pexels_api.search_videos(keyword, per_page=3)
                                 if videos:
-                                    print(f"Found {len(videos)} videos for generic keyword '{keyword}'")
-                                    all_videos.extend(videos)
-                                    if len(all_videos) >= 5:
-                                        break
-                            
-                            if not all_videos:
-                                print("Could not find any videos, even with generic keywords.")
-                                continue
+                                    print(f"Found {len(videos)} potential generic videos for '{keyword}'.")
+                                    video_added_for_keyword = False
+                                    for video_info in videos:
+                                        video_url = video_info.get('url')
 
-                        print(f"\nFound a total of {len(all_videos)} videos for the keywords.")
+                                        if video_url and video_url.endswith('.mp4'):
+                                            if video_url not in footage_pool_urls:
+                                                print(f"  + Adding generic video for '{keyword}': {video_url}")
+                                                selected_videos_raw.append({"url": video_url, "keyword": f"generic_{keyword}"})
+                                                footage_pool_urls.add(video_url)
+                                                video_added_for_keyword = True
+                                                break
+                                            # else: # Optional debug
+                                            #    print(f"  - Skipping generic video for '{keyword}' (duplicate URL: {video_url})")
+                                        # else: # Optional debug
+                                        #    if not video_url: print(f"  - Skipping generic video for '{keyword}' (no URL found in video_info)")
+                                        #    else: print(f"  - Skipping generic video for '{keyword}' (URL not MP4: {video_url})")
+                                    if not video_added_for_keyword:
+                                        print(f"  - Could not find a suitable unique generic video for '{keyword}' from results.")
+                                else:
+                                    print(f"No generic videos found for keyword '{keyword}'")
 
-                        # Create the video
+
+                        if not selected_videos_raw:
+                            print("\nError: Could not find any videos for the script. Cannot create video.")
+                            continue # Go back to main menu
+
+                        print(f"\nUsing {len(selected_videos_raw)} videos for the final video.")
+
+                        # Create the video using the simplified list
                         print("\nCreating video...")
-                        video_path = video_creator.create_video_with_narration(script_text, all_videos)
+                        video_path = video_creator.create_video_with_narration(script_text, selected_videos_raw) # Pass the simplified list
 
                         if video_path:
                             # Add video to database
+                            # Use the original enhanced keywords for DB logging, not just the ones we found videos for
                             video_id = db.add_video(script_id, video_path, enhanced_keywords)
                             if video_id:
                                 print(f"Video created and saved with ID: {video_id}")
