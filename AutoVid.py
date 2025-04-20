@@ -65,6 +65,14 @@ except ImportError:
     GTTS_AVAILABLE = False
     print("gTTS not available. Will try other TTS options.")
 
+# --- Add this near the other import blocks ---
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    print("Warning: OpenAI Whisper not available. Subtitle generation will be disabled.")
+
 class GNewsAPI:
     def __init__(self, api_key=None):
         # Use the provided API key or try to get from environment
@@ -263,7 +271,8 @@ class NewsDatabase:
                 video_path TEXT NOT NULL,
                 keywords TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (script_id) REFERENCES scripts (id)
+                has_subtitles INTEGER DEFAULT 0,
+                FOREIGN KEY (script_id) REFERENCES scripts(id)
             )
             ''')
             
@@ -381,7 +390,7 @@ class NewsDatabase:
             return []
     
     def add_video(self, script_id, video_path, keywords):
-        """Add a generated video to the database"""
+        """Add a video to the database"""
         try:
             keywords_str = ','.join(keywords) if isinstance(keywords, list) else keywords
             
@@ -390,12 +399,12 @@ class NewsDatabase:
                 (script_id, video_path, keywords_str)
             )
             self.conn.commit()
+            
             video_id = self.cursor.lastrowid
             print(f"Added video for script {script_id} with video ID {video_id}")
             return video_id
-        except sqlite3.Error as e:
+        except Exception as e:
             print(f"Error adding video to database: {e}")
-            self.conn.rollback()
             return None
     
     def get_scripts_without_videos(self, limit=5):
@@ -430,8 +439,7 @@ class NewsDatabase:
                 JOIN news_articles n ON s.news_id = n.id
                 ORDER BY v.created_at DESC
                 LIMIT ?
-                """,
-                (limit,)
+                """, (limit,)
             )
             videos = self.cursor.fetchall()
             return videos
@@ -821,24 +829,45 @@ class VideoCreator:
         return None
     
     def download_video(self, url, output_path):
-        """Download a video from URL to the specified path"""
+        """
+        Download a video from a URL to a local file.
+        
+        Parameters:
+        - url: URL of the video to download
+        - output_path: Path to save the downloaded video
+        
+        Returns:
+        - True if successful, False otherwise
+        """
         try:
+            # If url is a dictionary with 'url' key, extract the actual URL
+            if isinstance(url, dict) and 'url' in url:
+                url = url['url']
+                
             print(f"Downloading video from {url}...")
-            response = requests.get(url, stream=True)
             
-            if response.status_code != 200:
-                print(f"Error downloading video: {response.status_code}")
-                return False
+            # Using requests to download the file
+            response = requests.get(url, stream=True)
+            response.raise_for_status()  # Raise an exception for HTTP errors
             
             with open(output_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
             
-            print(f"Video downloaded to {output_path}")
-            return True
-            
-        except Exception as e:
+            # Verify the file was downloaded successfully
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                print(f"Video downloaded to {output_path}")
+                return True
+            else:
+                print(f"Error: Downloaded file is empty or missing: {output_path}")
+                return False
+                
+        except requests.exceptions.RequestException as e:
             print(f"Error downloading video: {e}")
+            return False
+        except Exception as e:
+            print(f"Error saving video: {e}")
             return False
     
     def create_simple_video(self, script, videos, output_filename=None):
@@ -929,169 +958,215 @@ class VideoCreator:
             except Exception as e:
                 print(f"Error cleaning up temporary directory: {e}")
 
-    def create_video_with_narration(self, script, video_sources, output_filename=None):
+    def create_video_with_narration(self, script_text, video_sources):
         """
-        Create a video with narration, dividing narration time equally among video clips.
+        Create a video with narration and subtitles from multiple video files
         
         Parameters:
-        - script: The script text to use for the video
-        - video_sources: List of dictionaries, each containing a video 'url' (expects ~5 sources)
-        - output_filename: Name for the output file (optional)
+        - script_text: The text script for narration
+        - video_sources: List of video sources, either URLs as strings or dictionaries with 'url' key
         
         Returns:
-        - Path to the created video if successful, None otherwise
+        - Path to the created video
         """
         if not video_sources:
-            print("No video sources available to create the video")
+            print("No video sources provided. Cannot create video.")
             return None
         
         if not self.ffmpeg_available:
-            print("FFmpeg not available. Cannot create video.")
+            print("FFmpeg is not available. Cannot create video.")
             return None
         
-        if not output_filename:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"news_video_{timestamp}.mp4"
-        
+        # Generate a unique filename based on timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"news_video_{timestamp}.mp4"
         output_path = os.path.join(self.output_dir, output_filename)
-        narrated_output_path = output_path.replace('.mp4', '_narrated.mp4')
         
+        # Create a temporary directory for processing
         temp_dir = tempfile.mkdtemp()
         
-        try:
+        try:  # Main try block for the entire method
             # 1. Generate Narration & Get Duration
             print("Generating narration from script...")
             audio_path = os.path.join(temp_dir, "narration.mp3")
-            if not self.generate_speech(script, audio_path):
+            if not self.generate_speech(script_text, audio_path):
                 print("Failed to generate speech. Cannot create narrated video.")
                 return None
             
-            narration_duration = self.get_audio_duration(audio_path)
-            if not narration_duration:
-                print("Could not determine narration duration. Using default 30s.")
-                narration_duration = 30.0
-            print(f"Narration duration: {narration_duration:.2f} seconds")
-
+            duration = self.get_audio_duration(audio_path)
+            if not duration:
+                print("Failed to get audio duration. Cannot create video.")
+                return None
+            print(f"Narration duration: {duration} seconds")
+            
             # 2. Download Videos
             print(f"Downloading {len(video_sources)} videos...")
             downloaded_video_paths = []
-            for i, video_info in enumerate(video_sources):
+            for i, video_source in enumerate(video_sources):
+                # Extract URL from dictionary if needed
+                if isinstance(video_source, dict) and 'url' in video_source:
+                    video_url = video_source['url']
+                else:
+                    video_url = video_source  # Assume it's already a URL string
+                    
                 video_path = os.path.join(temp_dir, f"download_{i}.mp4")
-                if self.download_video(video_info["url"], video_path):
+                if self.download_video(video_url, video_path):
                     downloaded_video_paths.append(video_path)
             
             if not downloaded_video_paths:
-                print("Failed to download any videos from the provided sources.")
+                print("Failed to download any videos. Cannot create video.")
                 return None
+            
             print(f"Successfully downloaded {len(downloaded_video_paths)} videos.")
-
-            # Save the script
+            
+            # Save script to a text file for future reference
             script_path = output_path.replace('.mp4', '_script.txt')
             with open(script_path, 'w', encoding='utf-8') as f:
-                f.write(script)
+                f.write(script_text)
             print(f"Script saved to {script_path}")
-
-            # 3. Process Videos to Match Narration Segments
-            processed_videos = []
-            num_clips = len(downloaded_video_paths)
-            clip_duration = narration_duration / num_clips if num_clips > 0 else narration_duration
+            
+            # Calculate clips durations
+            clip_count = len(downloaded_video_paths)
+            clip_duration = duration / clip_count
             print(f"Each clip will be processed to fit {clip_duration:.2f} seconds.")
             
+            # Process videos (trim and standardize)
+            processed_videos = []
             for i, video_path in enumerate(downloaded_video_paths):
-                processed_path = os.path.join(temp_dir, f"proc_{i}.mp4")
-                
-                # FFmpeg command to scale, set duration (padding if needed), remove audio
-                process_cmd = [
-                    self.ffmpeg_path,
-                    "-i", video_path,
-                    "-vf", f"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,tpad=stop_mode=clone:stop_duration={clip_duration+1}", # Scale, pad, set fps, pad end
-                    "-t", str(clip_duration), # Trim to exactly clip_duration
-                    "-an",  # Remove original audio
-                    "-c:v", "libx264", # Re-encode
-                    "-preset", "fast",
-                    "-crf", "23",
-                    "-y",
-                    processed_path
-                ]
-                
-                print(f"Processing video {i+1}/{num_clips}...")
-                try:
-                    subprocess.run(process_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+                print(f"Processing video {i+1}/{clip_count}...")
+                processed_path = os.path.join(temp_dir, f"processed_{i}.mp4")
+                success = self.process_video(video_path, processed_path, clip_duration)
+                if success:
                     processed_videos.append(processed_path)
                     print(f"✓ Successfully processed video {i+1}")
-                except subprocess.CalledProcessError as e:
-                    print(f"✗ Error processing video {i+1}")
-                    if e.stderr:
-                        error_text = e.stderr.decode()
-                        print(f"FFmpeg Error: {error_text}")
-                    print("Skipping video due to error.")
+                else:
+                    print(f"✗ Failed to process video {i+1}")
             
             if not processed_videos:
-                print("No videos were successfully processed.")
+                print("No videos were successfully processed. Cannot create video.")
                 return None
-
-            # 4. Concatenate Processed Videos
-            list_file = os.path.join(temp_dir, "file_list.txt")
-            with open(list_file, 'w') as f:
-                for video_path in processed_videos:
-                    f.write(f"file '{os.path.abspath(video_path)}'\n")
             
-            silent_output = os.path.join(temp_dir, "silent_output.mp4")
+            # Concatenate processed videos
+            print("Concatenating videos...")
+            concat_file_path = os.path.join(temp_dir, "concat_list.txt")
+            with open(concat_file_path, 'w') as f:
+                for video in processed_videos:
+                    f.write(f"file '{video}'\n")
+            
+            # Using FFmpeg to concatenate
+            concat_output = os.path.join(temp_dir, "concatenated.mp4")
             concat_cmd = [
                 self.ffmpeg_path,
-                "-v", "warning",
                 "-f", "concat",
                 "-safe", "0",
-                "-i", list_file,
-                "-c", "copy", # Copy codec since segments are already encoded
-                "-y",
-                silent_output
+                "-i", concat_file_path,
+                "-c", "copy",
+                "-y", concat_output
             ]
             
-            print("Concatenating videos...")
             try:
-                subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
+                subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 print("✓ Videos concatenated successfully")
             except subprocess.CalledProcessError as e:
-                print("✗ Error concatenating videos")
-                if e.stderr:
-                    print("Error details: " + e.stderr.decode())
+                print(f"Error concatenating videos: {e}")
                 return None
-
-            # 5. Add Narration
-            final_cmd = [
-                self.ffmpeg_path,
-                "-v", "warning",
-                "-i", silent_output,
-                "-i", audio_path,
-                "-c:v", "copy", # Copy video stream
-                "-c:a", "aac",  # Encode audio
-                "-map", "0:v:0",
-                "-map", "1:a:0",
-                "-shortest",  # Ensure final video length matches the shorter input
-                "-y",
-                narrated_output_path
-            ]
             
+            # Add narration using FFmpeg
             print("Adding narration to video...")
             try:
-                subprocess.run(final_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, check=True)
-                print(f"✓ Successfully created video with narration: {narrated_output_path}")
-                return narrated_output_path
+                # Normalize audio levels and add to video
+                final_cmd = [
+                    self.ffmpeg_path,
+                    "-i", concat_output,
+                    "-i", audio_path,
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                    "-shortest",
+                    "-y", output_path
+                ]
+                
+                subprocess.run(final_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                print(f"✓ Successfully created video with narration: {output_path}")
+                
+                # After the narration file is created and before video processing:
+                subtitle_path = None
+                if WHISPER_AVAILABLE:
+                    print("Generating subtitles with Whisper...")
+                    segments = self.transcribe_audio(audio_path)
+                    if segments:
+                        subtitle_path = os.path.join(temp_dir, "subtitles.ass")
+                        subtitle_path = self.generate_ass_subtitles(segments, subtitle_path)
+                    else:
+                        print("Whisper transcription failed, using script text for basic subtitles...")
+                        # Create a simple subtitle file directly from the script text
+                        subtitle_path = os.path.join(temp_dir, "simple_subtitles.srt")
+                        self.generate_simple_subtitles(script_text, subtitle_path, duration)
+                else:
+                    print("Whisper not available, using script text for basic subtitles...")
+                    subtitle_path = os.path.join(temp_dir, "simple_subtitles.srt")
+                    self.generate_simple_subtitles(script_text, subtitle_path, duration)
+                
+                final_output_path = output_path
+                if subtitle_path and os.path.exists(subtitle_path):
+                    print("Attempting to add subtitles using traditional FFmpeg filters...")
+                    subtitled_output_path = output_path.replace(".mp4", "_subtitled.mp4")
+                    result = self.burn_subtitles(output_path, subtitle_path, subtitled_output_path)
+                    
+                    if result and result != output_path:  # Check if a new file was created
+                        final_output_path = subtitled_output_path
+                        print(f"✓ Video with burned-in subtitles created: {final_output_path}")
+                    else:
+                        print("Traditional subtitle burning failed, trying sequential captions...")
+                        
+                        # Try the sequential caption approach
+                        seq_output_path = output_path.replace(".mp4", "_sequential.mp4")
+                        seq_result = self.create_sequential_captions(output_path, script_text, seq_output_path)
+                        
+                        if seq_result and os.path.exists(seq_result):
+                            final_output_path = seq_result
+                            print(f"✓ Video with sequential captions created: {final_output_path}")
+                        else:
+                            print("Sequential captions failed, trying fixed caption as last resort...")
+                            
+                            # Fall back to the simple caption overlay as the last resort
+                            caption_output_path = output_path.replace(".mp4", "_caption.mp4")
+                            caption_result = self.create_caption_overlay(output_path, script_text, caption_output_path)
+                            
+                            if caption_result and os.path.exists(caption_result):
+                                final_output_path = caption_result
+                                print(f"✓ Video with fixed caption created: {final_output_path}")
+                            else:
+                                print("All subtitle methods failed, using original video")
+                else:
+                    print("No subtitle file available, trying direct text overlay...")
+                    
+                    # Try creating subtitles directly from script text
+                    simplified_output_path = output_path.replace(".mp4", "_simple_subs.mp4")
+                    simple_result = self.create_hardcoded_subtitles(output_path, script_text, simplified_output_path)
+                    
+                    if simple_result and os.path.exists(simple_result):
+                        final_output_path = simple_result
+                        print(f"✓ Video with direct text overlay created: {final_output_path}")
+                    else:
+                        print("Direct text overlay failed, using original video")
+                
+                return final_output_path
+            
             except subprocess.CalledProcessError as e:
                 print("✗ Error adding narration to video")
-                if e.stderr:
-                    print("Error details: " + e.stderr.decode())
+                print(f"Command output: {e.stderr}")
                 return None
-
-        except Exception as e:
+        
+        except Exception as e:  # Main catch-all exception handler
             print(f"Error creating video with narration: {e}")
             import traceback
             traceback.print_exc()
             return None
         
-        finally:
-            # Clean up temporary directory
+        finally:  # Cleanup regardless of success or failure
+            # Clean up
             try:
                 shutil.rmtree(temp_dir)
                 print(f"Cleaned up temporary files in {temp_dir}")
@@ -1515,6 +1590,1111 @@ class VideoCreator:
         seconds %= 60
         milliseconds = int((seconds - int(seconds)) * 1000)
         return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{milliseconds:03d}"
+
+    def transcribe_audio(self, audio_path):
+        """
+        Transcribe the narration audio using OpenAI's Whisper
+        
+        Parameters:
+        - audio_path: Path to the audio file to transcribe
+        
+        Returns:
+        - A list of segments with start time, end time, and text
+        """
+        if not WHISPER_AVAILABLE:
+            print("Whisper not available. Cannot generate subtitles.")
+            return None
+        
+        try:
+            print("Loading Whisper model (this may take a moment)...")
+            # Use the "tiny" or "base" model for faster processing, or "small"/"medium" for better accuracy
+            model = whisper.load_model("base")
+            
+            print(f"Transcribing audio: {audio_path}")
+            
+            # Fix for FFmpeg path issue - explicitly set the FFmpeg command
+            import os
+            os.environ["PATH"] = os.environ["PATH"] + ";" + os.path.dirname(self.ffmpeg_path)
+            
+            # Provide more information about the audio file path
+            if not os.path.exists(audio_path):
+                print(f"Error: Audio file does not exist at {audio_path}")
+                return None
+                
+            try:
+                result = model.transcribe(audio_path, verbose=False)
+            except Exception as e:
+                print(f"Whisper transcription failed: {e}")
+                print("Trying alternative approach with raw audio...")
+                
+                # Fallback approach: Convert MP3 to WAV first using our own FFmpeg
+                wav_path = audio_path.replace('.mp3', '.wav')
+                convert_cmd = [
+                    self.ffmpeg_path,
+                    "-i", audio_path,
+                    "-ar", "16000",  # 16kHz sample rate (what Whisper expects)
+                    "-ac", "1",      # mono
+                    "-c:a", "pcm_s16le",  # 16-bit PCM
+                    "-y", wav_path
+                ]
+                
+                try:
+                    subprocess.run(convert_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    print(f"Converted audio to WAV format for Whisper: {wav_path}")
+                    
+                    # Now try transcribing the WAV file
+                    if os.path.exists(wav_path):
+                        result = model.transcribe(wav_path, verbose=False)
+                    else:
+                        print(f"Error: WAV conversion failed, file not found at {wav_path}")
+                        return None
+                except Exception as conv_e:
+                    print(f"Error converting audio to WAV: {conv_e}")
+                    return None
+            
+            if not result or "segments" not in result:
+                print("Transcription failed: No segments found")
+                return None
+            
+            print(f"Transcription completed: {len(result['segments'])} segments")
+            return result["segments"]
+        
+        except Exception as e:
+            print(f"Error during transcription: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def generate_ass_subtitles(self, segments, output_path):
+        """
+        Generate an ASS subtitle file from transcription segments
+        
+        Parameters:
+        - segments: List of segments with start/end times and text
+        - output_path: Path to save the ASS subtitle file
+        
+        Returns:
+        - Path to the subtitle file or None if failed
+        """
+        if not segments:
+            return None
+        
+        try:
+            print(f"Generating ASS subtitle file: {output_path}")
+            
+            # ASS file header with improved styling
+            header = """[Script Info]
+Title: Auto-generated by AutoVid
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+YCbCr Matrix: TV.709
+PlayResX: 1280
+PlayResY: 720
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2.5,1.5,2,10,10,30,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+            
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(header)
+                
+                # Write each dialogue line
+                for i, segment in enumerate(segments):
+                    start_time = self._format_timestamp(segment["start"])
+                    end_time = self._format_timestamp(segment["end"])
+                    text = segment["text"].strip()
+                    
+                    # Convert long lines into multiple lines for better readability
+                    # (split at around 40 characters, on word boundaries)
+                    if len(text) > 40:
+                        words = text.split()
+                        lines = []
+                        current_line = ""
+                        
+                        for word in words:
+                            if len(current_line) + len(word) + 1 > 40:
+                                lines.append(current_line)
+                                current_line = word
+                            else:
+                                if current_line:
+                                    current_line += " " + word
+                                else:
+                                    current_line = word
+                        
+                        if current_line:
+                            lines.append(current_line)
+                        
+                        text = "\\N".join(lines)  # \N is the ASS newline character
+                    
+                    dialogue_line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text}\n"
+                    f.write(dialogue_line)
+            
+            if os.path.exists(output_path):
+                print(f"✓ ASS subtitle file generated successfully: {output_path}")
+                return output_path
+            else:
+                print("Failed to generate subtitle file")
+                return None
+        
+        except Exception as e:
+            print(f"Error generating subtitle file: {e}")
+            return None
+        
+    def _format_timestamp(self, seconds):
+        """
+        Convert seconds to ASS timestamp format (h:mm:ss.cc)
+        """
+        hours = int(seconds / 3600)
+        minutes = int((seconds % 3600) / 60)
+        seconds = seconds % 60
+        centiseconds = int((seconds - int(seconds)) * 100)
+        seconds = int(seconds)
+        
+        return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
+
+    def burn_subtitles(self, video_path, subtitle_path, output_path):
+        """
+        Burn subtitles onto a video using FFmpeg with improved path handling
+        
+        Parameters:
+        - video_path: Path to the input video
+        - subtitle_path: Path to the ASS subtitle file
+        - output_path: Path to save the output video with subtitles
+        
+        Returns:
+        - Path to the output video or None if failed
+        """
+        if not os.path.exists(video_path) or not os.path.exists(subtitle_path):
+            print(f"Error: Video or subtitle file not found")
+            return None
+        
+        try:
+            print(f"Burning subtitles onto video...")
+            
+            # Get absolute paths to avoid ~1 short format issues
+            video_path_abs = os.path.abspath(video_path)
+            subtitle_path_abs = os.path.abspath(subtitle_path)
+            output_path_abs = os.path.abspath(output_path)
+            
+            # Use a simpler subtitle filter that is more reliable
+            subtitle_filter = f"subtitles='{subtitle_path_abs.replace('\\', '/')}'"
+            
+            # Alternative command using a more reliable subtitles filter
+            cmd = [
+                self.ffmpeg_path,
+                "-i", video_path_abs,
+                "-vf", subtitle_filter,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23",
+                "-c:a", "copy",
+                "-y", output_path_abs
+            ]
+            
+            print(f"Running FFmpeg command: {' '.join(cmd)}")
+            
+            # Execute the command
+            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            if os.path.exists(output_path):
+                print(f"✓ Video with subtitles created successfully: {output_path}")
+                return output_path
+            else:
+                print("Failed to create video with subtitles")
+                return None
+        
+        except subprocess.CalledProcessError as e:
+            print(f"FFmpeg error: {e}")
+            if e.stderr:
+                error_text = e.stderr.decode() if isinstance(e.stderr, bytes) else str(e.stderr)
+                print(f"FFmpeg Error: {error_text}")
+                
+            # If the above approach fails, try with a simpler SRT format
+            try:
+                print("Trying alternative subtitle approach...")
+                # Convert ASS to SRT first
+                srt_path = subtitle_path.replace('.ass', '.srt')
+                self._convert_ass_to_srt(subtitle_path, srt_path)
+                
+                if os.path.exists(srt_path):
+                    # Use a more basic subtitle filter
+                    cmd = [
+                        self.ffmpeg_path,
+                        "-i", video_path_abs,
+                        "-vf", f"subtitles='{os.path.abspath(srt_path).replace('\\', '/')}'",
+                        "-c:v", "libx264",
+                        "-preset", "fast", 
+                        "-crf", "23",
+                        "-c:a", "copy",
+                        "-y", output_path_abs
+                    ]
+                    
+                    print(f"Running alternative FFmpeg command: {' '.join(cmd)}")
+                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    
+                    if os.path.exists(output_path):
+                        print(f"✓ Video with subtitles created successfully (alternative method): {output_path}")
+                        return output_path
+                
+                print("Alternative subtitle approach also failed")
+            except Exception as alt_e:
+                print(f"Alternative subtitle method failed: {alt_e}")
+            
+            # Return the original video if subtitle burning fails
+            print("Returning original video without subtitles")
+            return video_path
+        
+        except Exception as e:
+            print(f"Error burning subtitles: {e}")
+            # Return the original video if subtitle burning fails
+            print("Returning original video without subtitles")
+            return video_path
+
+    def _convert_ass_to_srt(self, ass_path, srt_path):
+        """
+        Convert ASS subtitle file to SRT format using our segments
+        """
+        try:
+            # Read the ASS file to extract text and timing
+            with open(ass_path, 'r', encoding='utf-8') as f:
+                ass_content = f.readlines()
+            
+            # Find the dialogue lines
+            dialogue_lines = [line for line in ass_content if line.startswith('Dialogue:')]
+            
+            # Write SRT format
+            with open(srt_path, 'w', encoding='utf-8') as f:
+                for i, line in enumerate(dialogue_lines):
+                    parts = line.split(',', 9)  # Split into at most 10 parts
+                    if len(parts) >= 10:
+                        start_time = parts[1]
+                        end_time = parts[2]
+                        text = parts[9].strip()
+                        
+                        # Convert ASS time format to SRT
+                        srt_start = self._ass_to_srt_time(start_time)
+                        srt_end = self._ass_to_srt_time(end_time)
+                        
+                        # Remove any ASS formatting
+                        text = re.sub(r'{.*?}', '', text)
+                        
+                        # Write SRT entry
+                        f.write(f"{i+1}\n")
+                        f.write(f"{srt_start} --> {srt_end}\n")
+                        f.write(f"{text}\n\n")
+            
+            return True
+        except Exception as e:
+            print(f"Error converting ASS to SRT: {e}")
+            return False
+
+    def _ass_to_srt_time(self, ass_time):
+        """
+        Convert ASS time format (h:mm:ss.cc) to SRT format (hh:mm:ss,mmm)
+        """
+        h, m, rest = ass_time.split(':', 2)
+        s, cs = rest.split('.')
+        
+        # Convert to milliseconds
+        ms = int(cs) * 10
+        
+        return f"{h.zfill(2)}:{m.zfill(2)}:{s.zfill(2)},{ms:03d}"
+
+    def process_video(self, input_path, output_path, target_duration):
+        """
+        Process a video to fit a target duration.
+        
+        Parameters:
+        - input_path: Path to the input video
+        - output_path: Path to save the processed video
+        - target_duration: Target duration in seconds
+        
+        Returns:
+        - True if successful, False otherwise
+        """
+        if not os.path.exists(input_path):
+            print(f"Error: Input video not found: {input_path}")
+            return False
+            
+        try:
+            # FFmpeg command to scale, set duration (padding if needed), remove audio
+            process_cmd = [
+                self.ffmpeg_path,
+                "-i", input_path,
+                "-vf", f"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,tpad=stop_mode=clone:stop_duration={target_duration+0.1}",  # Scale, pad, set fps, pad end
+                "-t", str(target_duration),  # Trim to exactly target_duration
+                "-an",  # Remove original audio
+                "-c:v", "libx264",  # Re-encode
+                "-preset", "fast",
+                "-crf", "23",
+                "-y",
+                output_path
+            ]
+            
+            # Execute the command
+            subprocess.run(process_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # Verify the file was created successfully
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                return True
+            else:
+                print(f"Error: Processed video is empty or missing: {output_path}")
+                return False
+                
+        except subprocess.CalledProcessError as e:
+            print(f"Error processing video: {e}")
+            if e.stderr:
+                error_text = e.stderr.decode() if isinstance(e.stderr, bytes) else str(e.stderr)
+                print(f"FFmpeg Error: {error_text}")
+            return False
+        except Exception as e:
+            print(f"Unexpected error processing video: {e}")
+            return False
+
+    def create_simple_subtitled_video(self, video_path, subtitle_text, output_path):
+        """
+        A simpler approach to add basic hardcoded subtitles using drawtext filter
+        
+        Parameters:
+        - video_path: Path to input video
+        - subtitle_text: Plain text of subtitles
+        - output_path: Path to save output video
+        
+        Returns:
+        - Path to output video or None if failed
+        """
+        try:
+            # Split subtitle text into chunks (about 40 chars each)
+            words = subtitle_text.split()
+            chunks = []
+            current_chunk = ""
+            
+            for word in words:
+                if len(current_chunk) + len(word) + 1 <= 40:
+                    if current_chunk:
+                        current_chunk += " " + word
+                    else:
+                        current_chunk = word
+                else:
+                    chunks.append(current_chunk)
+                    current_chunk = word
+                    
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            # Calculate approximate duration for each chunk
+            total_duration = self.get_video_duration(video_path)
+            chunk_duration = total_duration / len(chunks) if chunks else 0
+            
+            # Create a temporary subtitle file with timecodes
+            temp_sub_path = os.path.join(os.path.dirname(output_path), "temp_subs.srt")
+            with open(temp_sub_path, 'w', encoding='utf-8') as f:
+                for i, chunk in enumerate(chunks):
+                    start_time = i * chunk_duration
+                    end_time = (i + 1) * chunk_duration
+                    
+                    # Write SRT format
+                    f.write(f"{i+1}\n")
+                    f.write(f"{self._format_srt_time(start_time)} --> {self._format_srt_time(end_time)}\n")
+                    f.write(f"{chunk}\n\n")
+            
+            # Use FFmpeg with the simpler subtitles filter
+            cmd = [
+                self.ffmpeg_path,
+                "-i", video_path,
+                "-vf", f"subtitles='{temp_sub_path.replace('\\', '/')}'",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-c:a", "copy",
+                "-y", output_path
+            ]
+            
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # Clean up temporary file
+            if os.path.exists(temp_sub_path):
+                os.remove(temp_sub_path)
+            
+            if os.path.exists(output_path):
+                return output_path
+            return None
+        
+        except Exception as e:
+            print(f"Error creating simple subtitled video: {e}")
+            return None
+    
+    def _format_srt_time(self, seconds):
+        """Format seconds as SRT timestamp (HH:MM:SS,mmm)"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        msecs = int((seconds - int(seconds)) * 1000)
+        
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{msecs:03d}"
+    
+    def get_video_duration(self, video_path):
+        """Get duration of a video file using FFmpeg"""
+        try:
+            cmd = [
+                self.ffmpeg_path,
+                "-i", video_path,
+                "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+            ]
+            
+            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            duration = float(result.stdout.decode().strip())
+            return duration
+        except Exception as e:
+            print(f"Error getting video duration: {e}")
+            return 0
+
+    def generate_simple_subtitles(self, text, output_path, duration):
+        """
+        Generate a simple SRT subtitle file from text, splitting it evenly across the duration
+        
+        Parameters:
+        - text: The text to convert to subtitles
+        - output_path: Path to save the subtitle file
+        - duration: Duration of the video in seconds
+        
+        Returns:
+        - Path to the subtitle file or None if failed
+        """
+        try:
+            # Split the text into chunks of approximately 40 characters each
+            words = text.split()
+            chunks = []
+            current_chunk = ""
+            
+            for word in words:
+                if len(current_chunk) + len(word) + 1 <= 40:
+                    if current_chunk:
+                        current_chunk += " " + word
+                    else:
+                        current_chunk = word
+                else:
+                    chunks.append(current_chunk)
+                    current_chunk = word
+            
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            # Calculate time per chunk
+            chunk_count = len(chunks)
+            time_per_chunk = duration / chunk_count if chunk_count > 0 else duration
+            
+            # Write the SRT file
+            with open(output_path, "w", encoding="utf-8") as f:
+                for i, chunk in enumerate(chunks):
+                    start_time = i * time_per_chunk
+                    end_time = (i + 1) * time_per_chunk
+                    
+                    # Format times as SRT timestamps
+                    start_str = self._format_srt_time(start_time)
+                    end_str = self._format_srt_time(end_time)
+                    
+                    # Write the subtitle entry
+                    f.write(f"{i+1}\n")
+                    f.write(f"{start_str} --> {end_str}\n")
+                    f.write(f"{chunk}\n\n")
+            
+            if os.path.exists(output_path):
+                print(f"✓ Simple subtitle file generated successfully: {output_path}")
+                return output_path
+            else:
+                print("Failed to generate simple subtitle file")
+                return None
+            
+        except Exception as e:
+            print(f"Error generating simple subtitles: {e}")
+            return None
+
+    def create_hardcoded_subtitles(self, video_path, script_text, output_path):
+        """
+        A very simple approach that adds text directly to the video using drawtext filter
+        
+        Parameters:
+        - video_path: Path to the input video
+        - script_text: The text to show as subtitles
+        - output_path: Path to save the output video
+        
+        Returns:
+        - Path to the output video or None if failed
+        """
+        try:
+            print("Using direct text overlay approach for subtitles...")
+            
+            # Split the script into shorter lines
+            lines = []
+            words = script_text.split()
+            current_line = ""
+            
+            for word in words:
+                if len(current_line) + len(word) + 1 <= 40:
+                    if current_line:
+                        current_line += " " + word
+                    else:
+                        current_line = word
+                else:
+                    lines.append(current_line)
+                    current_line = word
+            
+            if current_line:
+                lines.append(current_line)
+            
+            # Maximum number of lines to show at once
+            max_visible_lines = 2
+            
+            # Calculate how many frames to show each line
+            video_duration = self.get_video_duration(video_path)
+            if video_duration <= 0:
+                print("Could not determine video duration, using default 30 seconds")
+                video_duration = 30
+                
+            frames_per_line = int((video_duration * 30) / len(lines))  # Assuming 30fps
+            
+            # Create a temporary VTT file (simpler format)
+            temp_dir = os.path.dirname(output_path)
+            vtt_path = os.path.join(temp_dir, "simple_subs.vtt")
+            
+            with open(vtt_path, "w", encoding="utf-8") as f:
+                f.write("WEBVTT\n\n")
+                
+                for i, line in enumerate(lines):
+                    start_time = i * (video_duration / len(lines))
+                    end_time = (i + 1) * (video_duration / len(lines))
+                    
+                    # Format as VTT timestamps
+                    start_str = self._format_vtt_time(start_time)
+                    end_str = self._format_vtt_time(end_time)
+                    
+                    f.write(f"{start_str} --> {end_str}\n")
+                    f.write(f"{line}\n\n")
+            
+            # Use the drawtext filter for each line
+            drawtext_filters = []
+            for i in range(max_visible_lines):
+                y_position = f"h-{100 + (i * 40)}"  # Position from bottom
+                drawtext_filter = (
+                    f"drawtext=text='':fontfile=/Windows/Fonts/arial.ttf:fontsize=24:"
+                    f"fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=5:"
+                    f"x=(w-text_w)/2:y={y_position}:"
+                    f"enable='between(t,0,{video_duration})'"
+                )
+                drawtext_filters.append(drawtext_filter)
+            
+            # Create a very simple filter to add text at the bottom
+            simple_filter = "drawtext=text='Loading subtitles...':fontfile=/Windows/Fonts/arial.ttf:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=5:x=(w-text_w)/2:y=h-100"
+            
+            # Create the FFmpeg command
+            cmd = [
+                self.ffmpeg_path,
+                "-i", video_path,
+                "-vf", simple_filter,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-c:a", "copy",
+                "-y", output_path
+            ]
+            
+            print(f"Running simplified subtitle command: {' '.join(cmd)}")
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            if os.path.exists(output_path):
+                print(f"✓ Video with basic text overlay created: {output_path}")
+                return output_path
+            else:
+                print("Failed to create video with text overlay")
+                return None
+                
+        except Exception as e:
+            print(f"Error creating hardcoded subtitles: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def _format_vtt_time(self, seconds):
+        """Format seconds as WebVTT timestamp (HH:MM:SS.mmm)"""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        msecs = int((seconds - int(seconds)) * 1000)
+        
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}.{msecs:03d}"
+
+    def create_subtitles_with_moviepy(self, video_path, script_text, output_path):
+        """
+        Create subtitles using MoviePy (if available)
+        
+        Parameters:
+        - video_path: Path to the input video
+        - script_text: The text script for narration
+        - output_path: Path to save the output video
+        
+        Returns:
+        - Path to the output video or None if failed
+        """
+        if not MOVIEPY_AVAILABLE:
+            print("MoviePy not available for subtitle creation")
+            return None
+        
+        try:
+            from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+            
+            print("Creating subtitles with MoviePy...")
+            
+            # Load the video
+            video = VideoFileClip(video_path)
+            
+            # Split the script into parts
+            parts = []
+            sentences = script_text.split('. ')
+            total_words = sum(len(s.split()) for s in sentences)
+            words_per_second = total_words / video.duration
+            
+            # Break the script into chunks with timing
+            position = 0
+            for sentence in sentences:
+                words = sentence.split()
+                duration = len(words) / words_per_second
+                parts.append({
+                    'text': sentence + '.',
+                    'start': position,
+                    'duration': duration
+                })
+                position += duration
+            
+            # Create text clips for each part
+            subtitle_clips = []
+            for part in parts:
+                text_clip = (TextClip(part['text'], fontsize=24, font='Arial', color='white', 
+                                      bg_color='black', stroke_color='black', stroke_width=1,
+                                      method='caption', align='center', size=(video.w * 0.8, None))
+                              .set_position(('center', 'bottom'))
+                              .set_start(part['start'])
+                              .set_duration(part['duration']))
+                subtitle_clips.append(text_clip)
+            
+            # Add subtitles to the video
+            final_video = CompositeVideoClip([video] + subtitle_clips)
+            
+            # Write the result
+            final_video.write_videofile(output_path, 
+                                        codec='libx264', 
+                                        audio_codec='aac', 
+                                        temp_audiofile='temp-audio.m4a', 
+                                        remove_temp=True,
+                                        fps=video.fps)
+            
+            # Close the video objects
+            video.close()
+            final_video.close()
+            
+            if os.path.exists(output_path):
+                print(f"✓ Video with MoviePy subtitles created: {output_path}")
+                return output_path
+            else:
+                print("Failed to create video with MoviePy subtitles")
+                return None
+        
+        except Exception as e:
+            print(f"Error creating MoviePy subtitles: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def create_text_overlay_video(self, video_path, script_text, output_path):
+        """
+        Create a video with synchronized text overlays using drawtext filters
+        
+        Parameters:
+        - video_path: Path to the input video
+        - script_text: Text to display as subtitles
+        - output_path: Path to save the output video
+        
+        Returns:
+        - Path to the output video or None if failed
+        """
+        try:
+            print("Creating video with synchronized text overlays...")
+            
+            # Get video duration
+            try:
+                # Use ffprobe to get duration more reliably
+                cmd = [
+                    os.path.join(os.path.dirname(self.ffmpeg_path), "ffprobe"),
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    video_path
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+                duration = float(result.stdout.strip())
+                print(f"Video duration: {duration} seconds")
+            except Exception as e:
+                print(f"Error getting duration with ffprobe: {e}")
+                # Fallback to a default duration
+                duration = 20
+                print(f"Using default duration: {duration} seconds")
+            
+            # Split the script into sentences
+            sentences = re.split(r'(?<=[.!?])\s+', script_text)
+            
+            # Calculate time per sentence
+            sentence_count = len(sentences)
+            time_per_sentence = duration / sentence_count
+            
+            # Prepare drawtext filters for each sentence
+            drawtext_filters = []
+            for i, sentence in enumerate(sentences):
+                # Clean the sentence to avoid FFmpeg command issues
+                clean_text = sentence.replace("'", "'").replace('"', '\\"').replace(':', '\\:').replace(',', '\\,')
+                
+                start_time = i * time_per_sentence
+                end_time = (i + 1) * time_per_sentence
+                
+                # Create a drawtext filter for this sentence
+                filter_text = (
+                    f"drawtext=text='{clean_text}':"
+                    f"fontfile=/Windows/Fonts/arial.ttf:fontsize=24:"
+                    f"fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=5:"
+                    f"x=(w-text_w)/2:y=h-100:"
+                    f"enable='between(t,{start_time},{end_time})'"
+                )
+                drawtext_filters.append(filter_text)
+            
+            # Combine all drawtext filters with commas
+            filter_complex = ",".join(drawtext_filters)
+            
+            # Create tempfiles for the complex filter to avoid command line length issues
+            filter_file = os.path.join(os.path.dirname(output_path), "filter.txt")
+            with open(filter_file, 'w', encoding='utf-8') as f:
+                f.write(filter_complex)
+            
+            # Run FFmpeg with the filter complex
+            cmd = [
+                self.ffmpeg_path,
+                "-i", video_path,
+                "-filter_complex_script", filter_file,
+                "-c:v", "libx264",
+                "-preset", "fast", 
+                "-crf", "23",
+                "-c:a", "copy",
+                "-y", output_path
+            ]
+            
+            print(f"Running FFmpeg with filter_complex_script...")
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # Clean up the filter file
+            if os.path.exists(filter_file):
+                os.remove(filter_file)
+            
+            if os.path.exists(output_path):
+                print(f"✓ Video with synchronized text overlays created: {output_path}")
+                return output_path
+            else:
+                print("Failed to create video with text overlays")
+                return None
+        
+        except Exception as e:
+            print(f"Error creating text overlay video: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+    def create_caption_overlay(self, video_path, script_text, output_path):
+        """
+        A super simple approach that just adds a fixed caption to the video
+        
+        Parameters:
+        - video_path: Path to the input video
+        - script_text: Text for the caption
+        - output_path: Path to save the output video
+        
+        Returns:
+        - Path to the output video or None if failed
+        """
+        try:
+            print("Creating video with fixed caption overlay...")
+            
+            # Truncate and clean the script text to a reasonable length
+            if len(script_text) > 120:
+                # Take first 117 characters and add "..."
+                script_text = script_text[:117] + "..."
+            
+            # Clean the text to avoid FFmpeg command issues
+            clean_text = script_text.replace("'", "'").replace('"', '\\"').replace(':', '\\:').replace(',', '\\,')
+            
+            # Create a simple drawtext filter
+            filter_text = (
+                f"drawtext=text='{clean_text}':"
+                f"fontfile=/Windows/Fonts/arial.ttf:fontsize=20:"
+                f"fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=5:"
+                f"x=(w-text_w)/2:y=h-80"
+            )
+            
+            # Run FFmpeg with the simple filter
+            cmd = [
+                self.ffmpeg_path,
+                "-i", video_path,
+                "-vf", filter_text,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23", 
+                "-c:a", "copy",
+                "-y", output_path
+            ]
+            
+            print(f"Running simple caption overlay command...")
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            if os.path.exists(output_path):
+                print(f"✓ Video with caption overlay created: {output_path}")
+                return output_path
+            else:
+                print("Failed to create video with caption overlay")
+                return None
+                
+        except Exception as e:
+            print(f"Error creating caption overlay: {e}")
+            return None
+
+    def create_sequential_captions(self, video_path, script_text, output_path):
+        """
+        Create a video with multiple sequential captions using a chain of simpler filters
+        
+        Parameters:
+        - video_path: Path to input video
+        - script_text: Text to be displayed as captions
+        - output_path: Path to save output video
+        
+        Returns:
+        - Path to output video or None if failed
+        """
+        try:
+            print("Creating video with sequential caption overlays...")
+            
+            # Get video duration
+            try:
+                probe_cmd = [
+                    os.path.join(os.path.dirname(self.ffmpeg_path), "ffprobe"),
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    os.path.abspath(video_path)
+                ]
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                if probe_result.returncode == 0:
+                    duration = float(probe_result.stdout.strip())
+                    print(f"Video duration: {duration} seconds")
+                else:
+                    print(f"Error running ffprobe: {probe_result.stderr}")
+                    duration = 20.0  # Default duration
+            except Exception as e:
+                print(f"Error getting video duration: {e}")
+                duration = 20.0  # Default duration
+                
+            # Split text into sentences or chunks
+            lines = []
+            if len(script_text) > 150:
+                # Split by sentences
+                sentences = re.split(r'(?<=[.!?])\s+', script_text)
+                
+                # Now split long sentences into multiple lines
+                for sentence in sentences:
+                    if len(sentence) > 70:  # If sentence is too long, split it further
+                        words = sentence.split()
+                        current_line = ""
+                        for word in words:
+                            if len(current_line) + len(word) + 1 <= 70:
+                                if current_line:
+                                    current_line += " " + word
+                                else:
+                                    current_line = word
+                            else:
+                                lines.append(current_line)
+                                current_line = word
+                        if current_line:
+                            lines.append(current_line)
+                    else:
+                        lines.append(sentence)
+            else:
+                # Just use the whole script as a single caption
+                lines.append(script_text)
+            
+            # Calculate time per line
+            if len(lines) > 0:
+                time_per_line = duration / len(lines)
+            else:
+                print("No lines to display")
+                return None
+            
+            # Create a sequence of temporary videos, each with a single caption
+            temp_videos = []
+            base_name = os.path.splitext(output_path)[0]
+            
+            for i, line in enumerate(lines):
+                # Clean the line for FFmpeg
+                clean_line = line.replace("'", "'").replace('"', '\\"').replace(':', '\\:').replace(',', '\\,')
+                
+                # Create a temporary output file for this segment
+                temp_output = f"{base_name}_temp_{i}.mp4"
+                temp_videos.append(temp_output)
+                
+                # Calculate start and end times for this caption
+                start_time = i * time_per_line
+                end_time = (i + 1) * time_per_line
+                segment_duration = end_time - start_time
+                
+                # Create filter for this segment
+                if i == 0:
+                    # For the first segment, use the original video from start
+                    filter_text = (
+                        f"drawtext=text='{clean_line}':"
+                        f"fontfile=/Windows/Fonts/arial.ttf:fontsize=24:"
+                        f"fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=5:"
+                        f"x=(w-text_w)/2:y=h-100"
+                    )
+                    
+                    # Create the segment with the caption
+                    segment_cmd = [
+                        self.ffmpeg_path,
+                        "-i", video_path,
+                        "-vf", filter_text,
+                        "-ss", "0",
+                        "-t", str(segment_duration),
+                        "-c:v", "libx264",
+                        "-preset", "fast",
+                        "-crf", "23",
+                        "-c:a", "copy",
+                        "-y", temp_output
+                    ]
+                else:
+                    # For subsequent segments, use the original video from appropriate offset
+                    filter_text = (
+                        f"drawtext=text='{clean_line}':"
+                        f"fontfile=/Windows/Fonts/arial.ttf:fontsize=24:"
+                        f"fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=5:"
+                        f"x=(w-text_w)/2:y=h-100"
+                    )
+                    
+                    # Create the segment with the caption
+                    segment_cmd = [
+                        self.ffmpeg_path,
+                        "-i", video_path,
+                        "-vf", filter_text,
+                        "-ss", str(start_time),
+                        "-t", str(segment_duration),
+                        "-c:v", "libx264",
+                        "-preset", "fast",
+                        "-crf", "23",
+                        "-c:a", "copy",
+                        "-y", temp_output
+                    ]
+                
+                print(f"Creating segment {i+1}/{len(lines)} with caption: {line[:30]}...")
+                try:
+                    subprocess.run(segment_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if not os.path.exists(temp_output) or os.path.getsize(temp_output) == 0:
+                        print(f"Failed to create segment {i+1}, using simplified approach")
+                        return self.create_caption_overlay(video_path, script_text, output_path)
+                except subprocess.CalledProcessError as e:
+                    print(f"Error creating segment {i+1}: {e}")
+                    # If any segment fails, fall back to the basic caption
+                    return self.create_caption_overlay(video_path, script_text, output_path)
+            
+            # Now concatenate all segments
+            concat_file = f"{base_name}_concat.txt"
+            with open(concat_file, 'w', encoding='utf-8') as f:
+                for temp_video in temp_videos:
+                    f.write(f"file '{os.path.abspath(temp_video)}'\n")
+            
+            # Run FFmpeg concat command to join all segments
+            concat_cmd = [
+                self.ffmpeg_path,
+                "-f", "concat",
+                "-safe", "0",
+                "-i", concat_file,
+                "-c", "copy",
+                "-y", output_path
+            ]
+            
+            print("Concatenating all segments...")
+            try:
+                subprocess.run(concat_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                print(f"Error concatenating segments: {e}")
+                # If concatenation fails, fall back to the basic caption
+                return self.create_caption_overlay(video_path, script_text, output_path)
+            
+            # Clean up temporary files
+            for temp_video in temp_videos:
+                if os.path.exists(temp_video):
+                    os.remove(temp_video)
+            if os.path.exists(concat_file):
+                os.remove(concat_file)
+            
+            if os.path.exists(output_path):
+                print(f"✓ Video with sequential captions created: {output_path}")
+                return output_path
+            else:
+                print("Failed to create video with sequential captions")
+                return self.create_caption_overlay(video_path, script_text, output_path)
+        
+        except Exception as e:
+            print(f"Error creating sequential captions: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fall back to the basic caption method
+            return self.create_caption_overlay(video_path, script_text, output_path)
+
+    def debug_ffmpeg_command(self, cmd):
+        """
+        Run an FFmpeg command with detailed logging to help diagnose issues
+        
+        Parameters:
+        - cmd: FFmpeg command list
+        
+        Returns:
+        - Success flag, stdout, stderr
+        """
+        print("\n--- DEBUG: FFmpeg Command ---")
+        print("Command: " + " ".join(cmd))
+        
+        # Check if all files in the command exist
+        for i, item in enumerate(cmd):
+            if i > 0 and (item.endswith('.mp4') or item.endswith('.txt') or item.endswith('.srt')):
+                if os.path.exists(item):
+                    file_size = os.path.getsize(item)
+                    print(f"File exists: {item} (Size: {file_size} bytes)")
+                else:
+                    print(f"WARNING: File does not exist: {item}")
+        
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            print(f"Return code: {result.returncode}")
+            
+            if result.stdout:
+                print("--- STDOUT ---")
+                print(result.stdout)
+            
+            if result.stderr:
+                print("--- STDERR ---")
+                print(result.stderr)
+            
+            return result.returncode == 0, result.stdout, result.stderr
+        
+        except Exception as e:
+            print(f"Exception running command: {e}")
+            return False, "", str(e)
 
 # Simple test script
 if __name__ == "__main__":
