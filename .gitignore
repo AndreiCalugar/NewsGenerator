@@ -46,4 +46,11 @@ temp/
 # Ignore database files
 *.db
 *.sqlite
-*.sqlite3 
+*.sqlite3
+
+# Add news_automation.db to the list of database files
+news_automation.db
+
+# Exclude generated videos directory if desired
+videos/
+videos/* 

@@ -13,6 +13,32 @@ import subprocess
 import math
 import random
 
+# --- TTS Imports and Flags ---
+try:
+    # Import the client-based API instead of the older convenience functions
+    from elevenlabs.client import ElevenLabs
+    from elevenlabs import VoiceSettings
+    ELEVENLABS_AVAILABLE = True
+except ImportError:
+    ELEVENLABS_AVAILABLE = False
+    print("Warning: elevenlabs library not found. ElevenLabs TTS will be unavailable.")
+
+try:
+    # This should ONLY be the pyttsx3 import
+    import pyttsx3  # For offline TTS
+    PYTTSX3_AVAILABLE = True
+except ImportError:
+    PYTTSX3_AVAILABLE = False
+    print("Warning: pyttsx3 not available. Offline TTS will be unavailable.")
+
+try:
+    from gtts import gTTS  # Google Text-to-Speech
+    GTTS_AVAILABLE = True
+except ImportError:
+    GTTS_AVAILABLE = False
+    print("Warning: gTTS not available. Google TTS will be unavailable.")
+# --- End TTS Imports ---
+
 # Try to import moviepy, but continue if it fails
 try:
     from moviepy.editor import VideoFileClip, concatenate_videoclips, TextClip, CompositeVideoClip
@@ -731,22 +757,33 @@ class PexelsAPI:
 class VideoCreator:
     def __init__(self, output_dir="videos"):
         self.output_dir = output_dir
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
         
-        # Find FFmpeg executable
-        self.ffmpeg_path = self.find_ffmpeg()
-        if self.ffmpeg_path:
-            self.ffmpeg_available = True
-            print(f"FFmpeg found at: {self.ffmpeg_path}")
+        # Check FFmpeg availability
+        self.ffmpeg_path = self._find_ffmpeg()
+        self.ffmpeg_available = self.ffmpeg_path is not None
+        if not self.ffmpeg_available:
+            print("Warning: FFmpeg not found. Video creation will likely fail.")
+            
+        # --- Load ElevenLabs API Key ---
+        self.elevenlabs_api_key = os.environ.get("ELEVENLABS_API_KEY")
+        if ELEVENLABS_AVAILABLE and self.elevenlabs_api_key:
+            try:
+                # Create a client instance instead of setting the global API key
+                self.elevenlabs_client = ElevenLabs(api_key=self.elevenlabs_api_key)
+                print("ElevenLabs API key loaded and client created.")
+            except Exception as e:
+                print(f"Warning: Failed to initialize ElevenLabs client: {e}")
+                self.elevenlabs_api_key = None
+                self.elevenlabs_client = None
+        elif ELEVENLABS_AVAILABLE:
+            print("Warning: ELEVENLABS_API_KEY not found in .env file. ElevenLabs TTS will be unavailable.")
+            self.elevenlabs_client = None
         else:
-            self.ffmpeg_available = False
-            print("FFmpeg not found. Video creation will be limited to downloading only.")
-        
-        if not MOVIEPY_AVAILABLE:
-            print("Warning: MoviePy not available. Will try to use FFmpeg directly for video creation.")
-    
-    def find_ffmpeg(self):
+            self.elevenlabs_client = None
+        # --- End ElevenLabs Key Loading ---
+
+    def _find_ffmpeg(self):
         """Find the FFmpeg executable path"""
         # Common locations for FFmpeg
         possible_paths = [
@@ -1061,43 +1098,140 @@ class VideoCreator:
             except Exception as e:
                 print(f"Error cleaning up temporary directory: {e}")
 
-    def generate_speech(self, text, output_path):
+    def generate_speech_elevenlabs(self, text, output_path, voice_id="DMyrgzQFny3JI1Y1paM5"):
         """
-        Generate speech audio from text
+        Generates speech using the ElevenLabs API with the client-based approach.
         
         Parameters:
-        - text: The text to convert to speech
-        - output_path: Path to save the audio file
+        - text: The text to synthesize.
+        - output_path: The path to save the generated MP3 file.
+        - voice_id: The ElevenLabs voice ID to use (default: "Donavan" - DMyrgzQFny3JI1Y1paM5).
+                    Other common voices:
+                    Adam:   pNInz6obpgDQGcFmaJgB
+                    Antoni: ErXwobaYiN019PkySvjV
+                    Rachel: 21m00Tcm4TlvDq8ikWAM
         
         Returns:
-        - Path to the generated audio file if successful, None otherwise
+        - True if successful, False otherwise.
         """
-        print(f"Generating speech for text: '{text[:50]}...'")
+        if not ELEVENLABS_AVAILABLE or not self.elevenlabs_client:
+            print("ElevenLabs is not available or client not initialized.")
+            return False
+            
+        print(f"Attempting TTS generation with ElevenLabs (Voice ID: {voice_id})...")
+        try:
+            # Generate speech using the client-based approach
+            audio_response = self.elevenlabs_client.text_to_speech.convert(
+                text=text,
+                voice_id=voice_id,
+                model_id="eleven_multilingual_v2",  # For news content across languages
+                output_format="mp3_44100_128",  # High quality for professional sound
+                voice_settings=VoiceSettings(
+                    stability=0.5,          # Balanced stability
+                    similarity_boost=0.75,  # Higher similarity to reference voice
+                    style=0.0,              # Neutral style for news
+                    use_speaker_boost=True  # Enhance clarity
+                )
+            )
+            
+            # Write the audio stream to the output file
+            with open(output_path, "wb") as f:
+                # The response is a generator of audio chunks
+                for chunk in audio_response:
+                    if chunk:
+                        f.write(chunk)
+            
+            # Verify the file was created successfully
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                print(f"✓ ElevenLabs TTS generated successfully: {output_path}")
+                return True
+            else:
+                print("✗ ElevenLabs completed but output file is empty or missing.")
+                return False
+            
+        except Exception as e:
+            # Handle errors
+            print(f"✗ ElevenLabs TTS failed with error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Check for specific error messages
+            error_str = str(e).lower()
+            if "quota" in error_str or "limit" in error_str:
+                print("  (Possible quota exceeded)")
+            elif "voice" in error_str and "not found" in error_str:
+                print(f"  Error: Voice ID '{voice_id}' not found. Please check the ID on the ElevenLabs website.")
+                
+            return False
+
+    def generate_speech(self, text, output_path):
+        """
+        Generates speech from text using available TTS engines.
+        Tries ElevenLabs first, then pyttsx3, then gTTS.
         
-        # Try different TTS engines in order of preference
-        if GTTS_AVAILABLE:
-            try:
-                print("Using Google Text-to-Speech...")
-                tts = gTTS(text=text, lang='en', slow=False)
-                tts.save(output_path)
-                print(f"✓ Speech generated and saved to {output_path}")
-                return output_path
-            except Exception as e:
-                print(f"✗ Error using Google TTS: {e}")
+        Parameters:
+        - text: The text to synthesize.
+        - output_path: The path to save the generated MP3 file.
         
+        Returns:
+        - True if speech was generated successfully by any method, False otherwise.
+        """
+        
+        # --- Try ElevenLabs First ---
+        if ELEVENLABS_AVAILABLE and self.elevenlabs_client:
+            if self.generate_speech_elevenlabs(text, output_path):
+                return True # Success with ElevenLabs
+            else:
+                print("ElevenLabs failed, trying next TTS engine...")
+        # --- End ElevenLabs Attempt ---
+
+        # --- Try pyttsx3 (Offline) ---
         if PYTTSX3_AVAILABLE:
+            print("Attempting TTS generation with pyttsx3 (offline)...")
             try:
-                print("Using pyttsx3 for speech generation...")
                 engine = pyttsx3.init()
+                # Optional: Configure voice, rate, volume
+                # voices = engine.getProperty('voices')
+                # engine.setProperty('voice', voices[0].id) # Change index for different voices
+                # engine.setProperty('rate', 180) # Adjust speed
                 engine.save_to_file(text, output_path)
                 engine.runAndWait()
-                print(f"✓ Speech generated and saved to {output_path}")
-                return output_path
+                # Check if file was created and has size
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    print(f"✓ pyttsx3 TTS generated successfully: {output_path}")
+                    return True
+                else:
+                    print("✗ pyttsx3 completed but output file is missing or empty.")
+                    # Clean up potentially empty file
+                    if os.path.exists(output_path): os.remove(output_path)
             except Exception as e:
-                print(f"✗ Error using pyttsx3: {e}")
-        
-        print("No text-to-speech engines available. Please install either gTTS or pyttsx3.")
-        return None
+                print(f"✗ pyttsx3 TTS failed: {e}")
+        else:
+            print("pyttsx3 not available, skipping.")
+        # --- End pyttsx3 Attempt ---
+
+        # --- Try gTTS (Online) ---
+        if GTTS_AVAILABLE:
+            print("Attempting TTS generation with gTTS (online)...")
+            try:
+                tts = gTTS(text=text, lang='en') # Specify language
+                tts.save(output_path)
+                # Check if file was created and has size
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    print(f"✓ gTTS generated successfully: {output_path}")
+                    return True
+                else:
+                    print("✗ gTTS completed but output file is missing or empty.")
+                     # Clean up potentially empty file
+                    if os.path.exists(output_path): os.remove(output_path)
+            except Exception as e:
+                print(f"✗ gTTS TTS failed: {e}")
+        else:
+            print("gTTS not available, skipping.")
+        # --- End gTTS Attempt ---
+
+        print("✗ All TTS generation methods failed.")
+        return False
 
     def get_audio_duration(self, audio_path):
         """
