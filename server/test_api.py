@@ -5,9 +5,29 @@ import time
 
 BASE_URL = "http://localhost:5000/api"
 
-def test_generate_script():
-    print("Testing generate_script endpoint...")
-    response = requests.post(f"{BASE_URL}/generate_script")
+def test_get_articles():
+    print("Testing get_news_articles endpoint...")
+    response = requests.get(f"{BASE_URL}/news_articles")
+    result = response.json()
+    print(f"Status Code: {response.status_code}")
+    print(json.dumps(result, indent=2))
+    
+    if result.get("success"):
+        articles = result.get("data", {}).get("articles", [])
+        if articles:
+            return articles[0]["id"]  # Return the ID of the first article
+    return None
+
+def test_generate_script(article_id):
+    if not article_id:
+        print("No article_id available, skipping script generation test")
+        return None
+        
+    print(f"\nTesting generate_script with article_id {article_id}...")
+    response = requests.post(
+        f"{BASE_URL}/generate_script", 
+        json={"article_id": article_id}
+    )
     result = response.json()
     print(f"Status Code: {response.status_code}")
     print(json.dumps(result, indent=2))
@@ -46,16 +66,17 @@ def test_generate_video_from_custom_text():
 if __name__ == "__main__":
     print("Starting API tests...")
     
-    # Test script generation
-    script_id = test_generate_script()
+    # Test getting articles
+    article_id = test_get_articles()
     
-    # Allow some time for the server to process
-    if script_id:
-        print("Waiting 2 seconds before testing video generation...")
-        time.sleep(2)
+    # Test script generation with the article
+    if article_id:
+        script_id = test_generate_script(article_id)
         
         # Test video generation from article
-        test_generate_video_from_article(script_id)
+        if script_id:
+            time.sleep(2)  # Give some time for the server to process
+            test_generate_video_from_article(script_id)
     
     # Test custom text to video
     test_generate_video_from_custom_text()

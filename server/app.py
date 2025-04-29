@@ -5,6 +5,8 @@ import os
 import sys
 import sqlite3
 import traceback
+import json
+from datetime import datetime
 
 # First, try to import what we can from AutoVid
 # We'll create fallbacks for anything we can't import
@@ -212,10 +214,12 @@ pexels_api = available_classes.get('PexelsAPI', lambda: None)()
 
 print("App initialization complete")
 
-@app.route('/api/generate_script', methods=['POST'])
-def generate_script():
+os.environ['DISABLE_SUBTITLES'] = '1'  # Temporarily disable subtitles
+
+@app.route('/api/news_articles', methods=['GET'])
+def get_news_articles():
     try:
-        # Fetch news headlines first
+        # Fetch news headlines first (ensure we have latest news)
         news_fetcher.fetch_top_headlines()
         
         # Get the latest headlines from database
@@ -225,20 +229,74 @@ def generate_script():
             ORDER BY id DESC 
             LIMIT 10
         """)
-        articles = db.cursor.fetchall()
+        articles_raw = db.cursor.fetchall()
         
-        if not articles:
+        if not articles_raw:
             return jsonify({
                 "success": False,
                 "data": None,
                 "error": "No articles found"
             })
         
-        # Since we're using dummy data, we can just use the first article
-        # In a real app, you might want the user to select an article
-        article_id = articles[0][0]      # First article's ID
-        article_title = articles[0][1]   # First article's title
-        article_desc = articles[0][4]    # First article's description
+        # Format articles for the frontend
+        articles = []
+        for article in articles_raw:
+            articles.append({
+                "id": article[0],
+                "title": article[1],
+                "url": article[2],
+                "source": article[3],
+                "description": article[4]
+            })
+            
+        return jsonify({
+            "success": True,
+            "data": {
+                "articles": articles
+            },
+            "error": None
+        })
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/generate_script', methods=['POST'])
+def generate_script():
+    try:
+        # Get article_id from request
+        data = request.get_json()
+        article_id = data.get('article_id')
+        
+        if not article_id:
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": "No article_id provided"
+            }), 400
+        
+        # Get the article from the database
+        db.cursor.execute("""
+            SELECT id, title, url, source, description 
+            FROM articles 
+            WHERE id = ?
+        """, (article_id,))
+        article = db.cursor.fetchone()
+        
+        if not article:
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": f"Article with ID {article_id} not found"
+            }), 404
+            
+        article_id = article[0]
+        article_title = article[1]
+        article_desc = article[4]
         
         # Generate script using the existing script generator
         script = script_generator.generate_script(article_title, article_desc)
@@ -335,38 +393,54 @@ def generate_video_from_article():
                         break
         
         # Generate video with narration
-        final_video = video_creator.create_video_with_narration(script_text, selected_videos_raw)
-        
-        if not final_video or not os.path.exists(final_video):
-            return jsonify({
-                "success": False,
-                "data": None,
-                "error": "Failed to create video"
-            }), 500
+        try:
+            # Make subtitle generation optional and catch errors
+            try:
+                if os.environ.get('DISABLE_SUBTITLES') != '1':
+                    print("Generating subtitles (can be disabled with DISABLE_SUBTITLES=1)...")
+                    # subtitle generation code
+                else:
+                    print("Subtitle generation is disabled")
+            except Exception as subtitle_error:
+                print(f"Subtitle generation failed but continuing: {subtitle_error}")
             
-        # Make the path relative to static folder for client access
-        video_path = '/' + os.path.relpath(final_video, 'static').replace('\\', '/')
-        
-        # Save to database
-        db.cursor.execute(
-            """
-            INSERT INTO videos (script_id, video_path, created_at)
-            VALUES (?, ?, datetime('now'))
-            """,
-            (script_id, final_video)
-        )
-        db.conn.commit()
-        video_id = db.cursor.lastrowid
-        
-        return jsonify({
-            "success": True,
-            "data": {
-                "video_id": video_id,
-                "video_path": video_path,
-                "title": title
-            },
-            "error": None
-        })
+            # Continue with the rest of the video creation process
+            final_video = video_creator.create_video_with_narration(script_text, selected_videos_raw)
+            
+            if not final_video or not os.path.exists(final_video):
+                return jsonify({
+                    "success": False,
+                    "data": None,
+                    "error": "Failed to create video"
+                }), 500
+            
+            # Make the path relative to static folder for client access
+            video_path = '/' + os.path.relpath(final_video, 'static').replace('\\', '/')
+            
+            # Save to database
+            db.cursor.execute(
+                """
+                INSERT INTO videos (script_id, video_path, created_at)
+                VALUES (?, ?, datetime('now'))
+                """,
+                (script_id, final_video)
+            )
+            db.conn.commit()
+            video_id = db.cursor.lastrowid
+            
+            return jsonify({
+                "success": True,
+                "data": {
+                    "video_id": video_id,
+                    "video_path": video_path,
+                    "title": title
+                },
+                "error": None
+            })
+        except Exception as e:
+            print(f"Error in video creation: {e}")
+            traceback.print_exc()
+            raise
         
     except Exception as e:
         traceback.print_exc()
@@ -459,5 +533,17 @@ def generate_video_from_custom_text():
             "error": str(e)
         }), 500
 
+def update_progress_file(message):
+    """Update a progress file that could be polled by a client"""
+    progress_path = os.path.join(app.static_folder, 'progress.json')
+    try:
+        with open(progress_path, 'w') as f:
+            json.dump({
+                'timestamp': datetime.datetime.now().isoformat(),
+                'message': message
+            }, f)
+    except Exception as e:
+        print(f"Failed to write progress: {e}")
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, use_reloader=False)  # Disable reloader to prevent interruptions
