@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import math
 import random
+import inspect
 
 # --- TTS Imports and Flags ---
 try:
@@ -2696,6 +2697,179 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             print(f"Exception running command: {e}")
             return False, "", str(e)
 
+    def create_video_from_text(self, title, text_content, output_dir=None):
+        """
+        Create a video directly from input text
+        """
+        try:
+            print(f"Creating video from text: {title}")
+            print(f"Text content length: {len(text_content)} characters")
+            
+            # Step 1: Generate script from the text content
+            print("Generating script from text...")
+            script_generator = ScriptGenerator()
+            script = script_generator.generate_script(title, text_content)
+            
+            if not script:
+                print("Failed to generate script from text content")
+                return None, "Failed to generate script"
+                
+            print("-" * 50)
+            print("Generated script:")
+            print(script)
+            print("-" * 50)
+            
+            # Step 2: Extract keywords
+            print("Extracting keywords from script...")
+            keyword_extractor = KeywordExtractor()
+            
+            # Handle different parameter signatures
+            params = inspect.signature(keyword_extractor.extract_keywords).parameters
+            if len(params) == 3:  # If it needs two arguments (plus self)
+                keywords = keyword_extractor.extract_keywords(title, text_content)
+            else:
+                keywords = keyword_extractor.extract_keywords(script)
+            
+            print(f"Keywords: {', '.join(keywords)}")
+            
+            # Enhance keywords for better video results - same as in option 2
+            enhanced_keywords = keyword_extractor.enhance_video_search(keywords, "general")
+            print(f"Enhanced keywords for video search: {', '.join(enhanced_keywords)}")
+            
+            # Step 3: Setup output directory
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if not output_dir:
+                output_dir = os.path.join(self.output_dir, f"text2video_{timestamp}")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Save the script to a file
+            script_file = os.path.join(output_dir, "script.txt")
+            with open(script_file, "w", encoding="utf-8") as f:
+                f.write(script)
+            
+            # Step 4: Search for videos - IDENTICAL to option 2
+            target_video_count = 5
+            selected_videos_raw = []
+            footage_pool_urls = set() 
+            
+            print(f"\nSearching for up to {target_video_count} videos using keywords...")
+            keywords_to_search = enhanced_keywords[:target_video_count]
+            
+            pexels_api = PexelsAPI()
+            for keyword in keywords_to_search:
+                if len(selected_videos_raw) >= target_video_count:
+                    break  # Stop if we already have enough videos
+                    
+                print(f"Searching Pexels for videos with query: '{keyword}'...")
+                videos = pexels_api.search_videos(keyword, per_page=3)
+                
+                if videos:
+                    for video in videos:
+                        video_url = video.get('url')
+                        if video_url and video_url not in footage_pool_urls:
+                            selected_videos_raw.append({
+                                "url": video_url,
+                                "keyword": keyword
+                            })
+                            footage_pool_urls.add(video_url)
+                            print(f"Added video for '{keyword}': {video_url}")
+                            break  # Just get one video per keyword
+            
+            # Step 5: Generate speech from script
+            print("\nGenerating speech from script...")
+            audio_file = os.path.join(output_dir, "narration.mp3")
+            self.generate_speech(script, audio_file)
+            
+            # Step 6: Create the final video - EXACTLY like option 2 does
+            if not selected_videos_raw:
+                print("No videos found. Cannot create video.")
+                return None, "No videos found for keywords"
+            
+            print(f"\nCreating video with {len(selected_videos_raw)} footage clips...")
+            final_video = self.create_video_with_narration(script, selected_videos_raw)
+            
+            if final_video and os.path.exists(final_video):
+                print(f"\nVideo created successfully: {final_video}")
+                
+                # Step 7: Create vertical version for social media
+                try:
+                    print("\nCreating vertical version for social media...")
+                    vertical_path = final_video.replace('.mp4', '_vertical.mp4')
+                    
+                    cmd = [
+                        "ffmpeg",
+                        "-i", final_video,
+                        "-vf", "scale=720:-2,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black",
+                        "-c:v", "libx264",
+                        "-preset", "fast",
+                        "-c:a", "copy",
+                        "-y", vertical_path
+                    ]
+                    
+                    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    
+                    if os.path.exists(vertical_path):
+                        print(f"Vertical video created: {vertical_path}")
+                        return final_video, None, vertical_path
+                    else:
+                        # Return just the horizontal version if vertical fails
+                        return final_video, None
+                except Exception as e:
+                    print(f"Error creating vertical video: {e}")
+                    return final_video, None
+            else:
+                return None, "Failed to create video"
+        
+        except Exception as e:
+            import traceback
+            print(f"Error in create_video_from_text: {e}")
+            traceback.print_exc()
+            return None, str(e)
+
+    # 1. First, add this new method to convert videos to vertical format
+    def convert_to_vertical_video(self, input_file, output_file=None):
+        """
+        Convert a landscape video to vertical format (9:16) for social media
+        
+        Parameters:
+        - input_file: Path to input video file
+        - output_file: Path to output vertical video (if None, will use input_file with _vertical suffix)
+        
+        Returns:
+        - Path to the vertical video file
+        """
+        try:
+            if output_file is None:
+                base, ext = os.path.splitext(input_file)
+                output_file = f"{base}_vertical{ext}"
+            
+            print(f"Converting video to vertical format for social media...")
+            
+            # Use FFmpeg to convert to vertical format
+            # This scales the video to fit in a 9:16 aspect ratio, centering it and adding black bars
+            cmd = [
+                "ffmpeg",
+                "-i", input_file,
+                "-vf", "scale=-1:1280,boxblur=20:5,scale=720:1280,setsar=1:1[bg];[0:v]scale=-2:720[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-c:a", "copy",
+                "-y", output_file
+            ]
+            
+            subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            if os.path.exists(output_file):
+                print(f"✓ Vertical video created: {output_file}")
+                return output_file
+            else:
+                print("Failed to create vertical video")
+                return None
+        except Exception as e:
+            print(f"Error creating vertical video: {e}")
+            return None
+
 # Simple test script
 if __name__ == "__main__":
     print("Initializing News System...")
@@ -2870,15 +3044,13 @@ if __name__ == "__main__":
         while True:
             print("\n--- MAIN MENU ---")
             print("1. Generate script for a new article")
-            if MOVIEPY_AVAILABLE:
-                print("2. Create video for an article")
-            else:
-                print("2. Download videos for an article (MoviePy not available)")
+            print("2. Download videos for an article (MoviePy not available)")
             print("3. View recent scripts")
             print("4. View recent videos")
-            print("5. Exit")
+            print("5. Create video from custom text")  # Add this new option
+            print("6. Exit")  # Change from 5 to 6
             
-            choice = input("\nEnter your choice (1-5): ")
+            choice = input("\nEnter your choice (1-6): ")  # Update prompt to 1-6
             
             if choice == "1":
                 # Get unused articles
@@ -3130,12 +3302,96 @@ if __name__ == "__main__":
                 except ValueError:
                     print("Please enter a valid number.")
             
-            elif choice == "5":
+            elif choice == "5":  # Create video from custom text
+                print("\n--- CREATE VIDEO FROM CUSTOM TEXT ---")
+                
+                # Get title for the video
+                title = input("Enter a title for your video: ")
+                
+                # Get the custom text
+                print("\nEnter your text (type 'END' on a new line when finished):")
+                text_lines = []
+                while True:
+                    line = input()
+                    if line.strip() == "END":
+                        break
+                    text_lines.append(line)
+                
+                custom_text = "\n".join(text_lines)
+                
+                if not custom_text.strip():
+                    print("No text entered. Returning to main menu.")
+                    continue
+                
+                print(f"\nCreating video from text with title: {title}")
+                print(f"Text length: {len(custom_text)} characters")
+                
+                # Confirm with the user
+                confirm = input("\nProceed with video creation? (y/n): ")
+                if confirm.lower() != "y":
+                    print("Video creation cancelled.")
+                    continue
+                
+                # Create the video
+                print("\nGenerating video, this may take some time...")
+                
+                # Call our method with proper handling of returned values
+                result = video_creator.create_video_from_text(title, custom_text)
+                
+                # Check what was returned
+                if len(result) == 2:
+                    video_path, error = result
+                    vertical_path = None
+                else:
+                    video_path, error, vertical_path = result
+                
+                if video_path and os.path.exists(video_path):
+                    print(f"\nVideo created successfully!")
+                    print(f"Video saved to: {video_path}")
+                    
+                    if vertical_path and os.path.exists(vertical_path):
+                        print(f"Vertical video for social media saved to: {vertical_path}")
+                    
+                    # Add to database
+                    try:
+                        video_id = int(datetime.now().strftime("%Y%m%d%H%M%S"))
+                        
+                        # Extract keywords for database
+                        keywords = keyword_extractor.extract_keywords(title, custom_text)
+                        
+                        # Create video path string
+                        video_path_str = video_path
+                        if vertical_path:
+                            video_path_str = f"{video_path}|{vertical_path}"
+                        
+                        db.cursor.execute(
+                            """
+                            INSERT INTO videos 
+                            (id, title, script_text, video_path, keywords, created_at) 
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                video_id,
+                                title,
+                                custom_text,
+                                video_path_str,
+                                ",".join(keywords),
+                                datetime.now().isoformat()
+                            )
+                        )
+                        db.conn.commit()
+                        print(f"Video saved to database with ID: {video_id}")
+                    except Exception as e:
+                        print(f"Error saving to database: {e}")
+                else:
+                    print(f"\nFailed to create video: {error}")
+            
+            elif choice == "6":  # Change from 5 to 6
                 print("Exiting program.")
                 break
             
             else:
-                print("Invalid choice. Please enter a number between 1 and 5.")
+                print("Invalid choice. Please enter a number between 1 and 6.")  # Update range
     
     except Exception as e:
         print(f"Error in main menu: {e}")

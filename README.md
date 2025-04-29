@@ -1,16 +1,86 @@
 # AutoVid News Generator
 
-Automatically generate news videos from headlines. This tool fetches news headlines, generates scripts, and creates videos with narration.
+AutoVid is an automated video creation tool that converts news articles and custom text into professional-looking videos with narration.
 
 ## Features
 
-- Fetches latest news headlines from GNews API
-- Generates concise news scripts using OpenAI's GPT models
-- Extracts keywords for relevant video footage
-- Downloads appropriate video clips from Pexels
-- Generates professional voice narration using multiple TTS options
-- Combines video clips with narration to create complete news videos
-- Organizes and tracks content in a SQLite database
+- **News Aggregation**: Fetches current news articles from various online sources
+- **Script Generation**: Converts news articles into concise, engaging scripts
+- **Keyword Extraction**: Identifies key topics to find relevant video footage
+- **Video Creation**:
+  - Downloads stock footage based on keywords
+  - Generates speech narration from scripts
+  - Creates professional videos with narration and footage
+  - Produces both standard (16:9) and vertical (9:16) versions for social media
+- **Direct Text-to-Video**: Convert any custom text directly into a video
+- **Database Management**: Stores articles, scripts, and video information
+- **Simple Interface**: Easy-to-use command-line interface
+
+## Installation
+
+1. Clone this repository
+2. Install required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Set up your API keys in a `.env` file:
+   ```
+   OPENAI_API_KEY=your_openai_key
+   GNEWS_API_KEY=your_gnews_key
+   ELEVENLABS_API_KEY=your_elevenlabs_key
+   PEXELS_API_KEY=your_pexels_key
+   ```
+
+## Usage
+
+Run the main script to access all features:
+
+```
+python AutoVid.py
+```
+
+### Main Menu Options
+
+1. **Generate script for a new article**: Select news articles and create scripts
+2. **Download videos for an article**: Create videos from existing scripts
+3. **View recent scripts**: Browse and manage previously generated scripts
+4. **View recent videos**: Browse and manage created videos
+5. **Create video from custom text**: Generate a video directly from any text input
+6. **Exit**: Close the application
+
+### Creating Video from Custom Text
+
+The new text-to-video feature allows you to generate videos from any text:
+
+1. Select option 5 from the main menu
+2. Enter a title for your video
+3. Type or paste your custom text (enter 'END' on a new line when finished)
+4. Confirm the creation process
+5. The system will:
+   - Generate a script from your text
+   - Extract keywords
+   - Download relevant stock footage
+   - Create narration audio
+   - Produce both standard and vertical videos
+
+Videos will be saved in the `videos/text2video_[timestamp]` directory and added to the database for future reference.
+
+## Requirements
+
+- Python 3.8+
+- FFmpeg (must be installed and in your PATH)
+- API keys for OpenAI, GNews, ElevenLabs, and Pexels
+- Internet connection for downloading news and videos
+
+## Limitations
+
+1. Video quality depends on available stock footage matching your keywords
+2. The script generation is limited by the capabilities of the AI model
+3. The script text is properly formatted without special characters that might cause FFmpeg command issues
+
+## License
+
+[License information here]
 
 ## Speech Generation
 
