@@ -3,6 +3,9 @@
 
 # Database files
 *.db
+*.sqlite
+*.sqlite3
+news_automation.db
 
 # Python cache files
 __pycache__/
@@ -14,43 +17,76 @@ venv/
 env/
 .venv/
 .env/
+ENV/
 
 # IDE files
 .idea/
 .vscode/
 *.swp
+*.swo
+.DS_Store
 
-# Ignore video files
+# Media files
+## Video files
 *.mp4
 *.avi
 *.mov
 *.wmv
 *.flv
 *.mkv
-
-# Ignore the videos directory
 /videos/
-/videos/*
+videos/
 
-# Ignore temporary files
-/tmp/
-temp/
-*.tmp
-
-# Ignore audio files
+## Audio files
 *.mp3
 *.wav
 *.aac
 *.m4a
+*.ogg
 
-# Ignore database files
-*.db
-*.sqlite
-*.sqlite3
+# Temporary files
+/tmp/
+temp/
+*.tmp
+*.temp
 
-# Add news_automation.db to the list of database files
-news_automation.db
+# Logs
+*.log
+logs/
 
-# Exclude generated videos directory if desired
-videos/
-videos/* 
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Generated content
+generated/
+output/
+
+# Web server static files (if needed)
+# Uncomment if you want to ignore static files
+# server/static/videos/ 
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

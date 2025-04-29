@@ -15,6 +15,7 @@ AutoVid is an automated video creation tool that converts news articles and cust
 - **Direct Text-to-Video**: Convert any custom text directly into a video
 - **Database Management**: Stores articles, scripts, and video information
 - **Simple Interface**: Easy-to-use command-line interface
+- **Web Interface**: Web interface with API endpoints for integration
 
 ## Installation
 
@@ -48,13 +49,45 @@ python AutoVid.py
 5. **Create video from custom text**: Generate a video directly from any text input
 6. **Exit**: Close the application
 
+### Web Interface & API
+
+AutoVid now includes a web server with API endpoints for integration with other applications:
+
+1. Start the server:
+   ```
+   python server/app.py
+   ```
+2. Access the web interface at `http://localhost:5000`
+
+#### API Endpoints
+
+- **POST /api/generate_script**: Fetches news and generates a script
+- **POST /api/generate_video_from_article**: Creates a video from a saved script
+- **POST /api/generate_video_from_custom_text**: Creates a video directly from custom text
+
+Example API usage:
+
+```javascript
+// Generate video from custom text
+fetch("http://localhost:5000/api/generate_video_from_custom_text", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    title: "My Custom Video",
+    text: "This is the content for my video...",
+  }),
+})
+  .then((response) => response.json())
+  .then((data) => console.log(data));
+```
+
 ### Creating Video from Custom Text
 
-The new text-to-video feature allows you to generate videos from any text:
+The text-to-video feature allows you to generate videos from any text:
 
-1. Select option 5 from the main menu
+1. Select option 5 from the main menu (CLI) or use the web interface
 2. Enter a title for your video
-3. Type or paste your custom text (enter 'END' on a new line when finished)
+3. Type or paste your custom text
 4. Confirm the creation process
 5. The system will:
    - Generate a script from your text
@@ -63,7 +96,7 @@ The new text-to-video feature allows you to generate videos from any text:
    - Create narration audio
    - Produce both standard and vertical videos
 
-Videos will be saved in the `videos/text2video_[timestamp]` directory and added to the database for future reference.
+Videos will be saved in the `videos/text2video_[timestamp]` directory (CLI) or `static/videos` (web server) and added to the database for future reference.
 
 ## Requirements
 
@@ -71,6 +104,7 @@ Videos will be saved in the `videos/text2video_[timestamp]` directory and added 
 - FFmpeg (must be installed and in your PATH)
 - API keys for OpenAI, GNews, ElevenLabs, and Pexels
 - Internet connection for downloading news and videos
+- Flask and Flask-CORS (for web server functionality)
 
 ## Limitations
 
@@ -125,20 +159,6 @@ This multi-tiered approach ensures the system can continue to function even if p
    pip install moviepy
    ```
 
-## Usage
-
-Run the main script to start the interactive menu:
-
-```bash
-python AutoVid.py
-```
-
-Follow the on-screen prompts to:
-
-1. Generate scripts from news headlines
-2. Create videos with narration
-3. View existing scripts and videos
-
 ## Dependencies
 
 - Python 3.8+
@@ -150,14 +170,16 @@ Follow the on-screen prompts to:
 - MoviePy (optional)
 - pyttsx3
 - gTTS
+- Flask and Flask-CORS (for web server)
+- SQLite (for database)
 
 ## License
 
 [License information here]
 
-## New Feature: Video Subtitles
+## Feature: Video Subtitles
 
-The application now supports automatic subtitle generation and display for created videos:
+The application supports automatic subtitle generation and display for created videos:
 
 ### Subtitle Generation and Display
 
@@ -180,12 +202,6 @@ The application now supports automatic subtitle generation and display for creat
 - **FFmpeg Text Filters**: Uses drawtext filters to overlay captions at specific timestamps
 - **Multi-segment Processing**: Divides video into segments with appropriate captions for each part
 - **Robust Error Handling**: Multiple fallback approaches ensure videos always have some form of captioning
-
-### Requirements
-
-- FFmpeg with libx264 support
-- OpenAI Whisper (optional, but required for transcription)
-- Python 3.9+ with the dependencies listed in requirements.txt
 
 ### Troubleshooting
 
