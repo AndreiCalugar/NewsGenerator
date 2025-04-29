@@ -1,5 +1,5 @@
 // client/src/App.jsx
-import { useState } from "react";
+import React, { useState } from "react";
 import NewsFlow from "./components/NewsFlow";
 import CustomTextFlow from "./components/CustomTextFlow";
 import "./App.css";

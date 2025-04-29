@@ -1,10 +1,11 @@
 // client/src/components/NewsFlow.jsx
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
-  getNewsArticles,
+  fetchNewsArticles as getNewsArticles,
   generateScript,
   generateVideoFromArticle,
 } from "../services/api";
+import VideoPlayer from "./VideoPlayer";
 
 const NewsFlow = () => {
   const [loading, setLoading] = useState(false);
@@ -13,11 +14,40 @@ const NewsFlow = () => {
   const [scriptData, setScriptData] = useState(null);
   const [videoData, setVideoData] = useState(null);
   const [error, setError] = useState(null);
+  const [scriptLoading, setScriptLoading] = useState(false);
+  const [timeElapsed, setTimeElapsed] = useState(0);
+  const timerRef = useRef(null);
 
   // Fetch articles on component mount
   useEffect(() => {
     fetchArticles();
   }, []);
+
+  // Start timer when video generation begins
+  useEffect(() => {
+    if (loading && !videoData) {
+      // Reset timer
+      setTimeElapsed(0);
+
+      // Start timer
+      timerRef.current = setInterval(() => {
+        setTimeElapsed((prev) => prev + 1);
+      }, 1000);
+    } else {
+      // Clear timer when loading ends
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    }
+
+    // Cleanup when component unmounts
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, [loading, videoData]);
 
   const fetchArticles = async () => {
     setLoading(true);
@@ -48,21 +78,26 @@ const NewsFlow = () => {
   const handleGenerateScript = async () => {
     if (!selectedArticle) return;
 
-    setLoading(true);
-    setError(null);
-
     try {
+      setScriptLoading(true);
+      setError(null);
+
+      console.log("Generating script for article:", selectedArticle.id);
       const response = await generateScript(selectedArticle.id);
 
       if (response.success) {
         setScriptData(response.data);
+        console.log("Script generated:", response.data);
       } else {
         setError(response.error || "Failed to generate script");
+        console.error("Script generation failed:", response.error);
       }
-    } catch (err) {
-      setError(err.error || "An error occurred");
+    } catch (error) {
+      // This should not happen anymore
+      console.error("Unexpected error in script generation:", error);
+      setError("An unexpected error occurred");
     } finally {
-      setLoading(false);
+      setScriptLoading(false);
     }
   };
 
@@ -96,49 +131,88 @@ const NewsFlow = () => {
     }
   };
 
+  const debugVideoURL = (url) => {
+    // The server returns paths like "/videos/filename.mp4"
+    // We need to build a direct URL to the server
+    const fullUrl = `http://localhost:5000${url}`;
+
+    return (
+      <div className="debug-url">
+        <p>
+          <strong>URL from API:</strong> {url}
+        </p>
+        <p>
+          <strong>Full URL:</strong> {fullUrl}
+        </p>
+        <button
+          className="debug-button"
+          onClick={() => window.open(fullUrl, "_blank")}
+        >
+          Test in New Tab
+        </button>
+      </div>
+    );
+  };
+
+  // Add this helper function
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? "0" + secs : secs}`;
+  };
+
   return (
     <div className="news-flow">
-      <h2>Generate Video from News</h2>
+      <h2>News to Video Generator</h2>
 
       {/* Article Selection Section */}
       {!scriptData && (
         <div className="article-selection">
-          <h3>Select a News Article</h3>
+          <div className="article-header">
+            <h3>1. Select a News Article</h3>
+            <button
+              onClick={fetchArticles}
+              disabled={loading}
+              className="refresh-button"
+            >
+              ↻ Refresh Articles
+            </button>
+          </div>
 
           {loading && !articles.length ? (
             <p>Loading articles...</p>
           ) : (
             <div className="article-list">
-              {articles.map((article) => (
-                <div
-                  key={article.id}
-                  className={`article-card ${
-                    selectedArticle?.id === article.id ? "selected" : ""
-                  }`}
-                  onClick={() => handleArticleSelect(article)}
-                >
-                  <h4>{article.title}</h4>
-                  <div className="article-source">{article.source}</div>
-                  <p>{article.description}</p>
-                </div>
-              ))}
-
-              {articles.length === 0 && !loading && (
+              {articles.length === 0 && !loading ? (
                 <p>No articles available. Please try again later.</p>
+              ) : (
+                articles.map((article) => (
+                  <div
+                    key={article.id}
+                    className={`article-card ${
+                      selectedArticle?.id === article.id ? "selected" : ""
+                    }`}
+                    onClick={() => handleArticleSelect(article)}
+                  >
+                    <h4>{article.title}</h4>
+                    <div className="article-source">{article.source}</div>
+                    <p>{article.description}</p>
+                  </div>
+                ))
+              )}
+
+              {selectedArticle && (
+                <button
+                  onClick={handleGenerateScript}
+                  disabled={loading}
+                  className="primary-button"
+                >
+                  {loading
+                    ? "Generating Script..."
+                    : "Generate Script from Selected Article"}
+                </button>
               )}
             </div>
-          )}
-
-          {selectedArticle && (
-            <button
-              onClick={handleGenerateScript}
-              disabled={loading}
-              className="primary-button"
-            >
-              {loading
-                ? "Generating Script..."
-                : "Generate Script from Selected Article"}
-            </button>
           )}
         </div>
       )}
@@ -170,35 +244,33 @@ const NewsFlow = () => {
         <div className="video-result">
           <h3>Video Created: {videoData.title}</h3>
           <div className="video-player">
+            {debugVideoURL(videoData.video_url)}
             <video
               controls
               width="100%"
-              src={
-                videoData.video_path.startsWith("http")
-                  ? videoData.video_path // Use direct URL for mock data
-                  : `http://localhost:5000${videoData.video_path}` // Use server path for real data
-              }
-            />
+              src={`http://localhost:5000${videoData.video_url}`}
+              onError={(e) => console.error("Video error:", e)}
+            >
+              Your browser does not support the video tag.
+            </video>
           </div>
-          <a
-            href={
-              videoData.video_path.startsWith("http")
-                ? videoData.video_path
-                : `http://localhost:5000${videoData.video_path}`
-            }
-            target="_blank"
-            rel="noopener noreferrer"
-            className="download-link"
+          <div
+            className="debug-info"
+            style={{ fontSize: "12px", color: "#666", marginTop: "10px" }}
           >
-            Download Video
-          </a>
+            <p>Video ID: {videoData.video_id}</p>
+          </div>
         </div>
       )}
 
       {/* Loading Indicator */}
       {loading && !videoData && (
         <div className="loading-indicator">
-          <p>Creating video... This process can take several minutes.</p>
+          <p>Creating video... Time elapsed: {formatTime(timeElapsed)}</p>
+          <p>
+            This process can take several minutes. The longer the text, the more
+            time it takes.
+          </p>
           <p>Please don't close the browser window.</p>
           <div className="progress-animation"></div>
         </div>

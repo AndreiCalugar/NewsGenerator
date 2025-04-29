@@ -6,10 +6,11 @@ import time
 BASE_URL = "http://localhost:5000/api"
 
 def test_get_articles():
-    print("Testing get_news_articles endpoint...")
+    print("Testing get_news_articles endpoint to fetch unused articles...")
     response = requests.get(f"{BASE_URL}/news_articles")
     result = response.json()
     print(f"Status Code: {response.status_code}")
+    print(f"Found {len(result.get('data', {}).get('articles', []))} unused articles")
     print(json.dumps(result, indent=2))
     
     if result.get("success"):

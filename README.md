@@ -196,6 +196,15 @@ The application supports automatic subtitle generation and display for created v
 3. If that fails, it uses a sequential captioning approach that adds text overlays to each segment of the video
 4. As a final fallback, a simplified caption containing the beginning of the script is added
 
+## API Endpoints
+
+- `GET /api/news_articles` - Get latest news articles
+- `POST /api/generate_script` - Generate script from an article
+- `POST /api/generate_video_from_article` - Create video from a script
+- `POST /api/generate_video_from_custom_text` - Create video from custom text
+- `GET /api/videos` - Get all generated videos
+- `GET /api/health` - Check API health status
+
 ### Technical Implementation
 
 - **Whisper Integration**: Transcribes speech to text with precise timestamps
