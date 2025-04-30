@@ -41,27 +41,28 @@ CORS(app, resources={r"/api/*": {"origins": [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://news-generator-5mtw.vercel.app",
-    "https://news-generator-5mtw-ltb80sk2w-andreicalugars-projects.vercel.app",
+    "https://text-to-video-generator-d10o20qok-andreicalugars-projects.vercel.app",
     "*"  # For development only - remove in production
 ]}})
 
-# Ensure static folders exist
-app.config['STATIC_FOLDER'] = 'static'
-os.makedirs(os.path.join(app.config['STATIC_FOLDER'], 'videos'), exist_ok=True)
+# Setup static folders first
+app_root = os.path.dirname(os.path.abspath(__file__))
+static_dir = os.path.join(app_root, 'static')
+static_videos_dir = os.path.join(static_dir, 'videos')
+
+# Create necessary directories
+os.makedirs(static_dir, exist_ok=True)
+os.makedirs(static_videos_dir, exist_ok=True)
+print(f"Static directory: {static_dir}")
+print(f"Static videos directory: {static_videos_dir}")
 
 # Configure paths and initialize components
 script_generator = ScriptGenerator()
 
 # Find where you set up static folder configuration
 # Ensure static folders use absolute paths
-app_root = os.path.dirname(os.path.abspath(__file__))
-app.static_folder = os.path.join(app_root, 'static')
-app.static_url_path = ''
-
-# Create necessary directories
-static_videos_dir = os.path.join(app.static_folder, 'videos')
-os.makedirs(static_videos_dir, exist_ok=True)
-print(f"Static videos directory: {static_videos_dir}")
+app.config['STATIC_FOLDER'] = 'static'
+os.makedirs(os.path.join(app.config['STATIC_FOLDER'], 'videos'), exist_ok=True)
 
 # Add at the top after imports
 print(f"Current working directory: {os.getcwd()}")
@@ -196,20 +197,17 @@ except Exception as e:
 # Then initialize the VideoCreator:
 if has_video_creator:
     try:
-        # Get configuration from environment or use defaults
-        tts_engine = os.environ.get('TTS_ENGINE', 'gtts')  # or 'elevenlabs', 'pyttsx3'
-        ffmpeg_path = os.environ.get('FFMPEG_PATH', '/usr/bin/ffmpeg')
+        # Initialize with just output_dir parameter (which your class does accept)
+        output_videos_dir = os.path.join(os.getcwd(), 'server', 'static', 'videos')
+        os.makedirs(output_videos_dir, exist_ok=True)
         
-        # Initialize the video creator with these settings
-        video_creator = VideoCreator(
-            tts_engine=tts_engine,
-            ffmpeg_path=ffmpeg_path
-        )
+        # Initialize with only parameters that your class supports
+        video_creator = VideoCreator(output_dir=output_videos_dir)
         has_video_creator = True
-        print(f"VideoCreator initialized successfully using {tts_engine}")
+        print(f"VideoCreator initialized successfully with output dir: {output_videos_dir}")
     except Exception as e:
         print(f"Error initializing VideoCreator: {e}")
-        video_creator = None
+        video_creator = None  # Ensure it's None if initialization fails
         has_video_creator = False
         print("VideoCreator not available - video generation will be limited")
 
@@ -529,7 +527,7 @@ def generate_video_from_article():
                 db.conn.commit()
                 
                 # 10. Return success with the video URL (properly formatted)
-                video_url = f"/videos/{os.path.basename(video_path)}"
+                video_url = f"/static/videos/{os.path.basename(video_path)}"
                 print(f"Video created successfully at {video_path}, URL: {video_url}")
                 
                 return jsonify({
@@ -572,13 +570,13 @@ def generate_video_from_article():
             video_id = db.cursor.lastrowid
             
             # Return success with video URL
-            video_path = f"/static/videos/{video_filename}"
+            video_url = f"/static/videos/{os.path.basename(placeholder_path)}"
             return jsonify({
                 "success": True,
                 "data": {
                     "video_id": video_id,
                     "script_id": script_id,
-                    "video_url": video_path,
+                    "video_url": video_url,
                     "title": script_data['title']
                 },
                 "error": None
@@ -631,23 +629,66 @@ def get_videos():
 def generate_video_from_custom_text():
     try:
         # Check if video_creator is available
-        if not video_creator:
-            return jsonify({
-                "success": False,
-                "data": None,
-                "error": "Video generation feature is not available on this server"
-            }), 500
+        if not has_video_creator or video_creator is None:
+            print("VideoCreator not available. Creating placeholder text-to-video.")
             
+            # Create a placeholder response
+            data = request.json
+            title = data.get('title', 'Untitled')
+            text_content = data.get('text', '')
+            
+            # Generate a unique filename for the placeholder
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            video_filename = f"custom_video_{timestamp}.mp4"
+            
+            # Create placeholder file
+            videos_dir = os.path.join(app.static_folder, 'videos')
+            os.makedirs(videos_dir, exist_ok=True)
+            placeholder_path = os.path.join(videos_dir, video_filename)
+            
+            with open(placeholder_path, 'wb') as f:
+                f.write(b'placeholder')
+            print(f"Created placeholder video at: {placeholder_path}")
+            
+            # Construct the relative URL for the frontend
+            video_url = f"/static/videos/{os.path.basename(placeholder_path)}"
+            
+            # Get current timestamp for video ID
+            video_id = int(datetime.now().strftime("%Y%m%d%H%M%S"))
+            
+            # Save to database
+            db.cursor.execute(
+                """
+                INSERT INTO videos 
+                (id, title, script_text, video_path, keywords, created_at) 
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    video_id,
+                    title,
+                    text_content,
+                    placeholder_path,
+                    ""  # No keywords for placeholder
+                )
+            )
+            db.conn.commit()
+            
+            return jsonify({
+                "success": True,
+                "data": {
+                    "video_id": video_id,
+                    "title": title,
+                    "video_url": video_url,
+                    "vertical_video_url": None,
+                    "message": "Created placeholder video (full generation not available)"
+                },
+                "error": None
+            })
+        
+        # If we have video_creator, continue with the original code
         data = request.json
         title = data.get('title')
         text_content = data.get('text')
-        
-        if not title or not text_content:
-            return jsonify({
-                "success": False,
-                "data": None,
-                "error": "Title and text content are required"
-            }), 400
         
         print(f"Generating video for custom text: {title}")
         
@@ -675,8 +716,8 @@ def generate_video_from_custom_text():
             vertical_path = None
         
         # Fix URL construction - directly use the basename of the file with correct path
-        video_url = f"/videos/{os.path.basename(video_path)}"
-        vertical_url = f"/videos/{os.path.basename(vertical_path)}" if vertical_path else None
+        video_url = f"/static/videos/{os.path.basename(video_path)}"
+        vertical_url = f"/static/videos/{os.path.basename(vertical_path)}" if vertical_path else None
         
         print(f"Video generated at: {video_path}, URL: {video_url}")
         if vertical_path:
