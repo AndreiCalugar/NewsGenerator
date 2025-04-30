@@ -3,11 +3,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { generateVideoFromCustomText } from "../services/api";
 import VideoPlayer from "./VideoPlayer";
 
-const CustomTextFlow = () => {
+const CustomTextFlow = ({ videoData, setVideoData }) => {
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
-  const [videoData, setVideoData] = useState(null);
   const [error, setError] = useState(null);
   const [timeElapsed, setTimeElapsed] = useState(0);
   const timerRef = useRef(null);
@@ -47,9 +46,9 @@ const CustomTextFlow = () => {
   };
 
   const handleReset = () => {
+    setVideoData(null);
     setTitle("");
     setText("");
-    setVideoData(null);
     setError(null);
   };
 
@@ -188,18 +187,18 @@ const CustomTextFlow = () => {
           </button>
         </form>
       ) : (
-        <div className="result-container">
-          <h3>Generated Video: {videoData.title}</h3>
+        <div className="video-result">
+          <h3 className="section-headline">
+            Generated Video: {videoData.title}
+          </h3>
 
-          <div className="video-result">
-            <h3>Video Created: {videoData.title}</h3>
-
-            <div className="video-container">
+          <div className="video-display-wrapper">
+            {/* Standard Video */}
+            <div className="video-box">
               <h4>Standard Video</h4>
-              {debugVideoURL(videoData.video_url)}
+              {debugVideoURL && debugVideoURL(videoData.video_url)}
               <video
                 controls
-                width="100%"
                 src={`http://localhost:5000${videoData.video_url}`}
                 onError={(e) => console.error("Video error:", e)}
               >
@@ -207,12 +206,12 @@ const CustomTextFlow = () => {
               </video>
             </div>
 
+            {/* Vertical Video (if available) */}
             {videoData.vertical_video_url && (
-              <div className="video-container vertical">
+              <div className="video-box vertical">
                 <h4>Vertical Video (Social Media)</h4>
                 <video
                   controls
-                  width="100%"
                   src={`http://localhost:5000${videoData.vertical_video_url}`}
                   onError={(e) => console.error("Video error:", e)}
                 >
@@ -222,32 +221,25 @@ const CustomTextFlow = () => {
             )}
           </div>
 
-          <div className="keywords">
-            <h4>Keywords:</h4>
+          <div className="keywords-section">
+            <h4>Your video was based on these themes:</h4>
             <div className="keyword-list">
               {videoData.keywords &&
-                videoData.keywords.map((keyword, index) => (
-                  <span key={index} className="keyword-tag">
+                videoData.keywords.map((keyword, idx) => (
+                  <span key={idx} className="keyword-tag">
                     {keyword}
                   </span>
                 ))}
             </div>
           </div>
 
-          <button className="secondary-button" onClick={handleReset}>
+          <button
+            className="secondary-button"
+            onClick={handleReset}
+            title="Start over with a new video"
+          >
             Create Another Video
           </button>
-
-          <div
-            className="debug-info"
-            style={{ fontSize: "12px", color: "#666", marginTop: "10px" }}
-          >
-            <p>Video URL: {videoData.video_url}</p>
-            {videoData.vertical_video_url && (
-              <p>Vertical Video URL: {videoData.vertical_video_url}</p>
-            )}
-            <p>Video ID: {videoData.video_id}</p>
-          </div>
         </div>
       )}
 

@@ -7,12 +7,11 @@ import {
 } from "../services/api";
 import VideoPlayer from "./VideoPlayer";
 
-const NewsFlow = () => {
+const NewsFlow = ({ videoData, setVideoData }) => {
   const [loading, setLoading] = useState(false);
   const [articles, setArticles] = useState([]);
   const [selectedArticle, setSelectedArticle] = useState(null);
   const [scriptData, setScriptData] = useState(null);
-  const [videoData, setVideoData] = useState(null);
   const [error, setError] = useState(null);
   const [scriptLoading, setScriptLoading] = useState(false);
   const [timeElapsed, setTimeElapsed] = useState(0);
@@ -161,12 +160,22 @@ const NewsFlow = () => {
     return `${mins}:${secs < 10 ? "0" + secs : secs}`;
   };
 
+  // Add a reset function to clear video and script data
+  const handleReset = () => {
+    setVideoData(null);
+    setScriptData(null);
+    setSelectedArticle(null);
+    setError(null);
+  };
+
   return (
     <div className="news-flow">
-      <h2>News to Video Generator</h2>
+      <h2 className="section-headline">
+        Turn Today's Headlines into Short Videos
+      </h2>
 
-      {/* Article Selection Section */}
-      {!scriptData && (
+      {/* Article Selection Section - Show only if no script or video yet */}
+      {!scriptData && !videoData && (
         <div className="article-selection">
           <div className="article-header">
             <h3>1. Select a News Article</h3>
@@ -174,6 +183,7 @@ const NewsFlow = () => {
               onClick={fetchArticles}
               disabled={loading}
               className="refresh-button"
+              title="Get the latest news articles"
             >
               ↻ Refresh Articles
             </button>
@@ -200,49 +210,51 @@ const NewsFlow = () => {
                   </div>
                 ))
               )}
-
-              {selectedArticle && (
-                <button
-                  onClick={handleGenerateScript}
-                  disabled={loading}
-                  className="primary-button"
-                >
-                  {loading
-                    ? "Generating Script..."
-                    : "Generate Script from Selected Article"}
-                </button>
-              )}
             </div>
+          )}
+
+          {/* Generate Script button */}
+          {selectedArticle && (
+            <button
+              onClick={handleGenerateScript}
+              disabled={scriptLoading}
+              className="primary-button"
+              title="Create a script from this article"
+            >
+              {scriptLoading ? "Generating Script..." : "Generate Script"}
+            </button>
           )}
         </div>
       )}
 
-      {/* Script Display Section */}
-      {scriptData && (
+      {/* Script Display Section - Show when script is generated but no video yet */}
+      {scriptData && !videoData && (
         <div className="script-card">
           <h3>{scriptData.title}</h3>
           <div className="script-content">
             <p>{scriptData.script}</p>
           </div>
 
-          {!videoData && (
-            <button
-              onClick={handleCreateVideo}
-              disabled={loading}
-              className="primary-button"
-            >
-              {loading
-                ? "Creating Video (this may take several minutes)..."
-                : "Generate Video from Script"}
-            </button>
-          )}
+          {/* Generate Video button */}
+          <button
+            onClick={handleCreateVideo}
+            disabled={loading}
+            className="primary-button"
+            title="Create a video from this script"
+          >
+            {loading
+              ? "Creating Video (this may take several minutes)..."
+              : "Generate Video from Script"}
+          </button>
         </div>
       )}
 
-      {/* Video Display Section */}
+      {/* Video Display Section - Show when video is ready */}
       {videoData && (
         <div className="video-result">
-          <h3>Video Created: {videoData.title}</h3>
+          <h3 className="section-headline">
+            Generated Video: {videoData.title}
+          </h3>
           <div className="video-player">
             {debugVideoURL(videoData.video_url)}
             <video
@@ -260,6 +272,15 @@ const NewsFlow = () => {
           >
             <p>Video ID: {videoData.video_id}</p>
           </div>
+
+          {/* Generate Another Video button */}
+          <button
+            className="secondary-button"
+            onClick={handleReset}
+            title="Start over with a new video"
+          >
+            Generate Another Video
+          </button>
         </div>
       )}
 
