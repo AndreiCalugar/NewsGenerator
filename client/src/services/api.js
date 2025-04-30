@@ -1,13 +1,19 @@
 // client/src/services/api.js
 import axios from "axios";
 
+// Use environment variable or default to local development
 const API_URL =
-  process.env.REACT_APP_API_URL || "https://your-render-app-name.onrender.com";
+  process.env.REACT_APP_API_URL ||
+  (window.location.hostname === "localhost"
+    ? "http://localhost:5000/api"
+    : "https://your-render-app-name.onrender.com/api");
+
+console.log("API URL:", API_URL);
 
 // Create axios instance with default config
 const axiosInstance = axios.create({
   baseURL: API_URL,
-  timeout: 60000, // 60 seconds
+  timeout: 30000, // 30 seconds
   headers: {
     "Content-Type": "application/json",
   },

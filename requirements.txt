@@ -5,4 +5,12 @@ pillow==9.0.0
 numpy==1.22.0
 requests==2.28.0
 python-dotenv==0.19.2
+moviepy==1.0.3
+SpeechRecognition==3.10.0
+pydub==0.25.1
+ffmpeg-python==0.2.0
+nltk==3.8.1
+textblob==0.17.1
+opencv-python-headless==4.8.0.74
+matplotlib==3.7.2
 # Add any other packages your app uses 

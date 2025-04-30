@@ -1,5 +1,5 @@
 # server/app.py
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 import os
 import sys
@@ -32,7 +32,7 @@ except ImportError:
     print("VideoCreator not available - video generation will be limited")
 
 app = Flask(__name__, static_folder='static', static_url_path='')
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 # Ensure static folders exist
 app.config['STATIC_FOLDER'] = 'static'
@@ -690,5 +690,15 @@ def test_page():
 def health_check():
     return jsonify({"status": "ok", "message": "Server is running"}), 200
 
+@app.route('/videos/<path:filename>')
+def serve_video(filename):
+    video_path = os.path.join(os.path.dirname(__file__), 'static', 'videos')
+    return send_from_directory(video_path, filename)
+
+@app.route('/static/<path:path>')
+def serve_static(path):
+    return send_from_directory('static', path)
+
 if __name__ == '__main__':
-    app.run(debug=True, port=5000, use_reloader=False)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
