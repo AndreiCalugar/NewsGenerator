@@ -52,6 +52,21 @@ os.makedirs(os.path.join(app.config['STATIC_FOLDER'], 'videos'), exist_ok=True)
 # Configure paths and initialize components
 script_generator = ScriptGenerator()
 
+# Find where you set up static folder configuration
+# Ensure static folders use absolute paths
+app_root = os.path.dirname(os.path.abspath(__file__))
+app.static_folder = os.path.join(app_root, 'static')
+app.static_url_path = ''
+
+# Create necessary directories
+static_videos_dir = os.path.join(app.static_folder, 'videos')
+os.makedirs(static_videos_dir, exist_ok=True)
+print(f"Static videos directory: {static_videos_dir}")
+
+# Add at the top after imports
+print(f"Current working directory: {os.getcwd()}")
+print(f"App file directory: {os.path.dirname(os.path.abspath(__file__))}")
+
 # Database connection helper
 class SimpleDB:
     def __init__(self, db_path):
@@ -181,11 +196,22 @@ except Exception as e:
 # Then initialize the VideoCreator:
 if has_video_creator:
     try:
-        video_creator = VideoCreator(output_dir="static/videos")
-        print("VideoCreator initialized with output_dir: static/videos")
+        # Get configuration from environment or use defaults
+        tts_engine = os.environ.get('TTS_ENGINE', 'gtts')  # or 'elevenlabs', 'pyttsx3'
+        ffmpeg_path = os.environ.get('FFMPEG_PATH', '/usr/bin/ffmpeg')
+        
+        # Initialize the video creator with these settings
+        video_creator = VideoCreator(
+            tts_engine=tts_engine,
+            ffmpeg_path=ffmpeg_path
+        )
+        has_video_creator = True
+        print(f"VideoCreator initialized successfully using {tts_engine}")
     except Exception as e:
         print(f"Error initializing VideoCreator: {e}")
+        video_creator = None
         has_video_creator = False
+        print("VideoCreator not available - video generation will be limited")
 
 @app.route('/api/news_articles', methods=['GET'])
 def get_news_articles():
@@ -530,13 +556,17 @@ def generate_video_from_article():
             time.sleep(2)  # Simulate processing time
             
             # Create a placeholder file
-            with open(os.path.join(app.static_folder, 'videos', video_filename), 'wb') as f:
+            videos_dir = os.path.join(app.static_folder, 'videos')
+            os.makedirs(videos_dir, exist_ok=True)
+            placeholder_path = os.path.join(videos_dir, video_filename)
+            with open(placeholder_path, 'wb') as f:
                 f.write(b'placeholder')
+            print(f"Created placeholder video at: {placeholder_path}")
             
             # Store video record in database
             db.cursor.execute(
                 "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                (script_id, os.path.join('static', 'videos', video_filename))
+                (script_id, placeholder_path)
             )
             db.conn.commit()
             video_id = db.cursor.lastrowid
@@ -600,6 +630,14 @@ def get_videos():
 @app.route('/api/generate_video_from_custom_text', methods=['POST'])
 def generate_video_from_custom_text():
     try:
+        # Check if video_creator is available
+        if not video_creator:
+            return jsonify({
+                "success": False,
+                "data": None,
+                "error": "Video generation feature is not available on this server"
+            }), 500
+            
         data = request.json
         title = data.get('title')
         text_content = data.get('text')
