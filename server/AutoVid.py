@@ -1783,7 +1783,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             output_path_abs = os.path.abspath(output_path)
             
             # Use a simpler subtitle filter that is more reliable
-            subtitle_filter = f"subtitles='{subtitle_path_abs.replace('\\', '/')}'"
+            subtitle_filter = f"subtitles='{subtitle_path_abs.replace(chr(92), '/')}'"
             
             # Alternative command using a more reliable subtitles filter
             cmd = [
@@ -1827,7 +1827,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     cmd = [
                         self.ffmpeg_path,
                         "-i", video_path_abs,
-                        "-vf", f"subtitles='{os.path.abspath(srt_path).replace('\\', '/')}'",
+                        "-vf", f"subtitles='{os.path.abspath(srt_path).replace(chr(92), '/')}'",
                         "-c:v", "libx264",
                         "-preset", "fast", 
                         "-crf", "23",
@@ -2008,7 +2008,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             cmd = [
                 self.ffmpeg_path,
                 "-i", video_path,
-                "-vf", f"subtitles='{temp_sub_path.replace('\\', '/')}'",
+                "-vf", f"subtitles='{temp_sub_path.replace(chr(92), '/')}'",
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-c:a", "copy",
