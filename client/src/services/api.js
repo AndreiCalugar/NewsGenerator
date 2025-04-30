@@ -1,12 +1,12 @@
 // client/src/services/api.js
 import axios from "axios";
 
-// Use environment variable or default to local development
+// Fix: Use the correct Render URL instead of the placeholder
 const API_URL =
-  process.env.REACT_APP_API_URL ||
+  import.meta.env.VITE_API_URL ||
   (window.location.hostname === "localhost"
     ? "http://localhost:5000/api"
-    : "https://your-render-app-name.onrender.com/api");
+    : "https://newsgenerator-9iod.onrender.com/api");
 
 console.log("API URL:", API_URL);
 
@@ -322,11 +322,4 @@ export const fetchVideos = async () => {
 
 export const getNewsArticles = fetchNewsArticles;
 
-export default {
-  fetchNewsArticles,
-  getArticleById,
-  generateScript,
-  generateVideoFromArticle,
-  generateVideoFromCustomText,
-  fetchVideos,
-};
+export default axiosInstance;

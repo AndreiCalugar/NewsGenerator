@@ -37,7 +37,13 @@ if os.environ.get('RENDER'):
     os.environ['FFMPEG_BINARY'] = '/usr/bin/ffmpeg'
 
 app = Flask(__name__, static_folder='static', static_url_path='')
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {"origins": [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://news-generator-5mtw.vercel.app",
+    "https://news-generator-5mtw-ltb80sk2w-andreicalugars-projects.vercel.app",
+    "*"  # For development only - remove in production
+]}})
 
 # Ensure static folders exist
 app.config['STATIC_FOLDER'] = 'static'
