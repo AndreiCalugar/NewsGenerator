@@ -31,6 +31,11 @@ except ImportError:
     has_video_creator = False
     print("VideoCreator not available - video generation will be limited")
 
+# Set FFmpeg path automatically in production
+if os.environ.get('RENDER'):
+    # For Render deployment, FFmpeg is at this location
+    os.environ['FFMPEG_BINARY'] = '/usr/bin/ffmpeg'
+
 app = Flask(__name__, static_folder='static', static_url_path='')
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
@@ -698,6 +703,15 @@ def serve_video(filename):
 @app.route('/static/<path:path>')
 def serve_static(path):
     return send_from_directory('static', path)
+
+@app.route('/')
+def index():
+    return jsonify({
+        "status": "ok",
+        "message": "API is running. Use /api/... endpoints to access functionality.",
+        "version": "1.0.0",
+        "documentation": "Contact developer for API documentation"
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
