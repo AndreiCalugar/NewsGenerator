@@ -637,8 +637,9 @@ def generate_video_from_custom_text():
             title = data.get('title', 'Untitled')
             text_content = data.get('text', '')
             
-            # Generate a unique filename for the placeholder
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # Fix: Use a different variable name to avoid confusion
+            current_time = datetime.now()
+            timestamp = current_time.strftime('%Y%m%d_%H%M%S')
             video_filename = f"custom_video_{timestamp}.mp4"
             
             # Create placeholder file
@@ -654,7 +655,7 @@ def generate_video_from_custom_text():
             video_url = f"/static/videos/{os.path.basename(placeholder_path)}"
             
             # Get current timestamp for video ID
-            video_id = int(datetime.now().strftime("%Y%m%d%H%M%S"))
+            video_id = int(current_time.strftime("%Y%m%d%H%M%S"))
             
             # Save to database
             db.cursor.execute(
@@ -729,8 +730,8 @@ def generate_video_from_custom_text():
         keywords = keyword_extractor.extract_keywords(title, text_content)
         
         # Save to database
-        from datetime import datetime
-        video_id = int(datetime.now().strftime("%Y%m%d%H%M%S"))
+        current_time = datetime.now()
+        video_id = int(current_time.strftime("%Y%m%d%H%M%S"))
         
         video_path_str = video_path
         if vertical_path:
