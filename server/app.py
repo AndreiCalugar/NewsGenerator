@@ -383,85 +383,129 @@ def generate_script():
 
 @app.route('/api/generate_video_from_article', methods=['POST'])
 def generate_video_from_article():
-    """Generate a video for a script"""
     try:
-        data = request.json
+        data = request.get_json()
         script_id = data.get('script_id')
+        
+        if not script_id:
+            return jsonify({"success": False, "error": "No script_id provided"}), 400
+        
+        # Debug info
         print(f"Starting video generation for script ID: {script_id}")
         
-        # Check if video_creator is available
-        if not has_video_creator or video_creator is None:
-            print("VideoCreator not available. Creating placeholder video.")
-            # Create placeholder video code...
-            # (Keep your existing placeholder code)
+        # Get script from database
+        db.cursor.execute(
+            """
+            SELECT s.id, s.script_text, a.title 
+            FROM scripts s
+            JOIN articles a ON s.article_id = a.id
+            WHERE s.id = ?
+            """, 
+            (script_id,)
+        )
+        script_data = db.cursor.fetchone()
+        
+        if not script_data:
+            return jsonify({"success": False, "error": f"Script with ID {script_id} not found"}), 404
             
-        else:
-            # Run video generation in a background thread to avoid timeout
-            import threading
-            
-            def generate_video_in_background():
-                try:
-                    # Get script from database
-                    db.cursor.execute("SELECT * FROM scripts WHERE id = ?", (script_id,))
-                    script = db.cursor.fetchone()
-                    
-                    if not script:
-                        print(f"Script with ID {script_id} not found")
-                        return
-                    
-                    script_text = script[2]  # Assuming script text is the 3rd column
-                    title = script[1]        # Assuming title is the 2nd column
-                    
-                    print(f"Generating video for script: {title}")
-                    
-                    # Generate video
-                    video_path = video_creator.create_video_from_text(title, script_text)
-                    
-                    if video_path:
-                        # Save to database and update status
-                        video_filename = os.path.basename(video_path)
-                        video_url = f"/static/videos/{video_filename}"
+        # Create a unique video filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        video_filename = f"video_{script_id}_{timestamp}.mp4"
+        
+        # Start background processing
+        import threading
+        
+        def generate_video_in_background():
+            try:
+                # Save script to a text file for reference
+                script_file = os.path.join(os.getcwd(), 'server', 'static', 'videos', f"{os.path.splitext(video_filename)[0]}_script.txt")
+                os.makedirs(os.path.dirname(script_file), exist_ok=True)
+                
+                with open(script_file, 'w', encoding='utf-8') as f:
+                    f.write(script_data['script_text'])
+                
+                print(f"Script saved to {script_file}")
+                
+                # Get full path for video
+                videos_dir = os.path.join(os.getcwd(), 'server', 'static', 'videos')
+                video_path = os.path.join(videos_dir, video_filename)
+                
+                # Create the video if video_creator is available
+                if has_video_creator and video_creator is not None:
+                    try:
+                        print(f"Generating video for script: {script_data['title']}")
+                        # Use low memory mode
+                        video_path = video_creator.create_video_from_text(
+                            script_data['title'], 
+                            script_data['script_text'],
+                            low_memory_mode=True  # Add this param to your function
+                        )
+                        
+                        # Save to database if successful
+                        if video_path:
+                            db.cursor.execute(
+                                "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
+                                (script_id, video_path)
+                            )
+                            db.conn.commit()
+                            print(f"Video created and saved to database: {video_path}")
+                        else:
+                            # If video creation failed, create a placeholder
+                            with open(video_path, 'wb') as f:
+                                f.write(b'placeholder')
+                            print(f"Created placeholder video at: {video_path}")
+                            
+                            db.cursor.execute(
+                                "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
+                                (script_id, video_path)
+                            )
+                            db.conn.commit()
+                    except Exception as e:
+                        print(f"Error in video creation: {e}")
+                        # Create placeholder on error
+                        with open(video_path, 'wb') as f:
+                            f.write(b'placeholder')
+                        print(f"Created placeholder video after error at: {video_path}")
                         
                         db.cursor.execute(
-                            """
-                            INSERT INTO videos (script_id, video_path, created_at)
-                            VALUES (?, ?, datetime('now'))
-                            """,
+                            "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
                             (script_id, video_path)
                         )
                         db.conn.commit()
-                        print(f"Video created and saved to database: {video_path}")
-                    else:
-                        print("Video creation failed")
-                        
-                except Exception as e:
-                    print(f"Error in background video generation: {e}")
+                else:
+                    # Create placeholder if video_creator not available
+                    with open(video_path, 'wb') as f:
+                        f.write(b'placeholder')
+                    print(f"Created placeholder video at: {video_path}")
+                    
+                    db.cursor.execute(
+                        "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
+                        (script_id, video_path)
+                    )
+                    db.conn.commit()
             
-            # Create and start the background thread
-            thread = threading.Thread(target=generate_video_in_background)
-            thread.daemon = True
-            thread.start()
-            
-            # Immediately return a response to avoid timeout
-            return jsonify({
-                "success": True,
-                "data": {
-                    "message": "Video generation started. Please check the Videos tab in a few minutes.",
-                    "status": "processing",
-                    "script_id": script_id
-                },
-                "error": None
-            })
+            except Exception as e:
+                print(f"Error in background video generation: {e}")
         
-        # Existing code for immediate video generation or placeholder...
-
-    except Exception as e:
-        print(f"Error in generate_video_from_article: {e}")
+        # Start generation in background
+        thread = threading.Thread(target=generate_video_in_background)
+        thread.daemon = True
+        thread.start()
+        
+        # Return immediate response with status
         return jsonify({
-            "success": False,
-            "data": None,
-            "error": str(e)
-        }), 500
+            "success": True,
+            "data": {
+                "status": "processing",
+                "message": "Video generation started in background. Check Videos tab in a few minutes.",
+                "script_id": script_id
+            },
+            "error": None
+        })
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/videos', methods=['GET'])
 def get_videos():
