@@ -197,17 +197,20 @@ except Exception as e:
 # Then initialize the VideoCreator:
 if has_video_creator:
     try:
-        # Initialize with just output_dir parameter (which your class does accept)
+        # Render installs FFmpeg in /usr/bin/ffmpeg, so specify this path directly instead of prompting
         output_videos_dir = os.path.join(os.getcwd(), 'server', 'static', 'videos')
         os.makedirs(output_videos_dir, exist_ok=True)
         
-        # Initialize with only parameters that your class supports
-        video_creator = VideoCreator(output_dir=output_videos_dir)
+        # Pass the FFmpeg path explicitly instead of prompting
+        video_creator = VideoCreator(
+            output_dir=output_videos_dir,
+            ffmpeg_path='/usr/bin/ffmpeg'  # Specify this explicitly
+        )
         has_video_creator = True
-        print(f"VideoCreator initialized successfully with output dir: {output_videos_dir}")
+        print(f"VideoCreator initialized with explicit ffmpeg path: /usr/bin/ffmpeg")
     except Exception as e:
         print(f"Error initializing VideoCreator: {e}")
-        video_creator = None  # Ensure it's None if initialization fails
+        video_creator = None
         has_video_creator = False
         print("VideoCreator not available - video generation will be limited")
 
@@ -637,7 +640,7 @@ def generate_video_from_custom_text():
             title = data.get('title', 'Untitled')
             text_content = data.get('text', '')
             
-            # Fix: Use a different variable name
+            # Fix: Use a different variable n
             current_time = datetime.now()
             timestamp = current_time.strftime('%Y%m%d_%H%M%S')
             video_filename = f"custom_video_{timestamp}.mp4"

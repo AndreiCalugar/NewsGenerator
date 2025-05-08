@@ -764,16 +764,27 @@ class PexelsAPI:
             return []
 
 class VideoCreator:
-    def __init__(self, output_dir="videos"):
+    def __init__(self, output_dir=None, ffmpeg_path=None):
+        # If ffmpeg_path is provided, use it directly
+        if ffmpeg_path and os.path.exists(ffmpeg_path):
+            self.ffmpeg_path = ffmpeg_path
+            print(f"Using provided FFmpeg path: {self.ffmpeg_path}")
+            self.has_ffmpeg = True
+        else:
+            # Otherwise use the existing detection code without prompting
+            self.ffmpeg_path = self._find_ffmpeg()
+            
+            # If FFmpeg not found, set a flag but don't prompt
+            if not self.ffmpeg_path:
+                print("FFmpeg not found. Video generation will be limited.")
+                self.has_ffmpeg = False
+            else:
+                print(f"Using FFmpeg at: {self.ffmpeg_path}")
+                self.has_ffmpeg = True
+        
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Check FFmpeg availability
-        self.ffmpeg_path = self._find_ffmpeg()
-        self.ffmpeg_available = self.ffmpeg_path is not None
-        if not self.ffmpeg_available:
-            print("Warning: FFmpeg not found. Video creation will likely fail.")
-            
         # --- Load ElevenLabs API Key ---
         self.elevenlabs_api_key = os.environ.get("ELEVENLABS_API_KEY")
         if ELEVENLABS_AVAILABLE and self.elevenlabs_api_key:
@@ -793,40 +804,25 @@ class VideoCreator:
         # --- End ElevenLabs Key Loading ---
 
     def _find_ffmpeg(self):
-        """Find the FFmpeg executable path"""
-        # Common locations for FFmpeg
-        possible_paths = [
-            "ffmpeg",                          # If in PATH
-            "C:\\ffmpeg\\bin\\ffmpeg.exe",     # Common Windows install location
-            "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
-            "C:\\Program Files\\ffmpeg\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffmpeg.exe",  # Your specific path
-            os.path.expanduser("~/ffmpeg/bin/ffmpeg"),
-            os.path.expanduser("~/.local/bin/ffmpeg"),
-            "/usr/bin/ffmpeg",                 # Linux/Mac locations
+        """Find the FFmpeg executable path."""
+        # Check for ffmpeg in common locations
+        common_paths = [
+            "ffmpeg",  # In PATH
+            "/usr/bin/ffmpeg",
             "/usr/local/bin/ffmpeg",
+            "/opt/homebrew/bin/ffmpeg",
+            "/opt/render/ffmpeg/bin/ffmpeg",
+            "C:\\ffmpeg\\bin\\ffmpeg.exe",
+            "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe"
         ]
         
-        # Try to find ffmpeg in the possible locations
-        for path in possible_paths:
-            try:
-                print(f"Checking for FFmpeg at: {path}")
-                result = subprocess.run([path, "-version"], 
-                                       stdout=subprocess.PIPE, 
-                                       stderr=subprocess.PIPE, 
-                                       shell=True)
-                if result.returncode == 0:
-                    print(f"FFmpeg found at: {path}")
-                    return path
-            except Exception as e:
-                print(f"Error checking {path}: {e}")
-                continue
+        for path in common_paths:
+            print(f"Checking for FFmpeg at: {path}")
+            if self._is_valid_ffmpeg(path):
+                return path
         
-        # Ask the user for the FFmpeg path if not found
         print("FFmpeg not found in common locations.")
-        user_path = input("Please enter the full path to ffmpeg executable (or press Enter to skip): ")
-        if user_path and os.path.exists(user_path):
-            return user_path
-        
+        # Instead of interactive prompt, just return None
         return None
     
     def download_video(self, url, output_path):
@@ -884,7 +880,7 @@ class VideoCreator:
             print("No videos available to create the video")
             return None
         
-        if not self.ffmpeg_available:
+        if not self.has_ffmpeg:
             print("FFmpeg not available. Cannot create video.")
             return None
         
@@ -974,7 +970,7 @@ class VideoCreator:
             print("No video sources provided. Cannot create video.")
             return None
         
-        if not self.ffmpeg_available:
+        if not self.has_ffmpeg:
             print("FFmpeg is not available. Cannot create video.")
             return None
         
@@ -1319,7 +1315,7 @@ class VideoCreator:
         Returns:
         - Duration in seconds (float) or None if error
         """
-        if not self.ffmpeg_available:
+        if not self.has_ffmpeg:
             print("FFmpeg not available. Cannot determine audio duration.")
             return None
         
@@ -1418,7 +1414,7 @@ class VideoCreator:
         Returns:
         - Path to the video with captions if successful, None otherwise
         """
-        if not self.ffmpeg_available:
+        if not self.has_ffmpeg:
             print("FFmpeg not available. Cannot add captions.")
             return None
         
