@@ -23,3 +23,22 @@
   margin: 0;
   color: #0d47a1;
 }
+
+/* Add animation to the progress bar */
+.progress-animation {
+  height: 6px;
+  background: linear-gradient(90deg, #ff9800 0%, #ffb74d 50%, #ff9800 100%);
+  background-size: 200% 100%;
+  animation: progress-bar-animation 1.5s infinite;
+  border-radius: 3px;
+  margin-top: 10px;
+}
+
+@keyframes progress-bar-animation {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}

@@ -329,4 +329,31 @@ export const fetchVideos = async () => {
 
 export const getNewsArticles = fetchNewsArticles;
 
+export const checkVideoStatus = async (scriptId) => {
+  if (USE_MOCK_API) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    return {
+      success: true,
+      data: {
+        status: Math.random() > 0.5 ? "completed" : "processing",
+        video_id: 123,
+        video_url: "/videos/sample_video.mp4",
+      },
+      error: null,
+    };
+  }
+
+  try {
+    const response = await axios.get(`${API_URL}/video_status/${scriptId}`);
+    return response.data;
+  } catch (error) {
+    console.error("Error checking video status:", error);
+    return {
+      success: false,
+      data: null,
+      error: error.response?.data?.error || "Failed to check video status",
+    };
+  }
+};
+
 export default axiosInstance;

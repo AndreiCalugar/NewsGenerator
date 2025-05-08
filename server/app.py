@@ -433,12 +433,36 @@ def generate_video_from_article():
                 # Create the video if video_creator is available
                 if has_video_creator and video_creator is not None:
                     try:
-                        print(f"Generating video for script: {script_data['title']}")
-                        # Remove the low_memory_mode parameter that's causing the error
+                        print(f"[BG THREAD] Starting video generation for: {script_data['title']}")
+                        print(f"[BG THREAD] Using script with {len(script_data['script_text'])} characters")
+                        
+                        # Add 10 second timeout monitoring
+                        import time
+                        start_time = time.time()
+                        last_update = start_time
+                        
+                        def progress_callback():
+                            nonlocal last_update
+                            current_time = time.time()
+                            if current_time - last_update > 10:
+                                print(f"[BG THREAD] Still processing video at {int(current_time - start_time)} seconds...")
+                                last_update = current_time
+                        
+                        # Start progress monitoring in a separate thread
+                        monitor_thread = threading.Thread(target=lambda: [progress_callback() or time.sleep(5) for _ in range(100)])
+                        monitor_thread.daemon = True
+                        monitor_thread.start()
+                        
+                        # Attempt to generate video with explicit temporary path
+                        temp_video_path = os.path.join(videos_dir, f"temp_{video_filename}")
+                        print(f"[BG THREAD] Will save temporary video to: {temp_video_path}")
+                        
                         video_path = video_creator.create_video_from_text(
                             script_data['title'], 
                             script_data['script_text']
                         )
+                        
+                        print(f"[BG THREAD] Video generation completed: {video_path}")
                         
                         # Save to database if successful
                         if video_path:
@@ -447,12 +471,12 @@ def generate_video_from_article():
                                 (script_id, video_path)
                             )
                             db.conn.commit()
-                            print(f"Video created and saved to database: {video_path}")
+                            print(f"[BG THREAD] Video saved to database: {video_path}")
                         else:
                             # If video creation failed, create a placeholder
                             with open(video_path, 'wb') as f:
                                 f.write(b'placeholder')
-                            print(f"Created placeholder video at: {video_path}")
+                            print(f"[BG THREAD] Created placeholder video at: {video_path}")
                             
                             db.cursor.execute(
                                 "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
@@ -460,11 +484,13 @@ def generate_video_from_article():
                             )
                             db.conn.commit()
                     except Exception as e:
-                        print(f"Error in video creation: {e}")
+                        print(f"[BG THREAD] Error in video creation: {e}")
+                        traceback.print_exc()  # Print the full error stack trace
+                        
                         # Create placeholder on error
                         with open(video_path, 'wb') as f:
                             f.write(b'placeholder')
-                        print(f"Created placeholder video after error at: {video_path}")
+                        print(f"[BG THREAD] Created placeholder video after error at: {video_path}")
                         
                         db.cursor.execute(
                             "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
@@ -636,6 +662,60 @@ def index():
         "version": "1.0.0",
         "documentation": "Contact developer for API documentation"
     })
+
+@app.route('/api/video_status/<int:script_id>', methods=['GET'])
+def get_video_status(script_id):
+    """Check if a video has been generated for a script"""
+    try:
+        # Look for video in database
+        db.cursor.execute(
+            "SELECT id, video_path, created_at FROM videos WHERE script_id = ? ORDER BY created_at DESC LIMIT 1", 
+            (script_id,)
+        )
+        
+        video = db.cursor.fetchone()
+        
+        if video:
+            video_path = video['video_path']
+            # Check if file exists and has content
+            full_path = os.path.join(os.getcwd(), 'server', video_path.lstrip('/')) if video_path.startswith('/') else video_path
+            
+            if os.path.exists(full_path) and os.path.getsize(full_path) > 1000:  # Real video should be > 1KB
+                # Video is ready
+                return jsonify({
+                    "success": True,
+                    "data": {
+                        "status": "completed",
+                        "video_id": video['id'],
+                        "video_url": f"/static/{os.path.basename(video_path)}" if not video_path.startswith('/static/') else video_path,
+                        "created_at": video['created_at']
+                    },
+                    "error": None
+                })
+            else:
+                # Video is a placeholder or still processing
+                return jsonify({
+                    "success": True,
+                    "data": {
+                        "status": "processing",
+                        "message": "Video is still being generated. Please check again in a minute."
+                    },
+                    "error": None
+                })
+        else:
+            # No video found
+            return jsonify({
+                "success": True,
+                "data": {
+                    "status": "not_found",
+                    "message": "No video found for this script. You may need to request video generation."
+                },
+                "error": None
+            })
+            
+    except Exception as e:
+        print(f"Error checking video status: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

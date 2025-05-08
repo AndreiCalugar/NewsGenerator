@@ -4,6 +4,7 @@ import {
   fetchNewsArticles as getNewsArticles,
   generateScript,
   generateVideoFromArticle,
+  checkVideoStatus,
 } from "../services/api";
 import VideoPlayer from "./VideoPlayer";
 
@@ -48,6 +49,29 @@ const NewsFlow = ({ videoData, setVideoData }) => {
       }
     };
   }, [loading, videoData]);
+
+  // Add a useEffect to check video status if we're in processing state
+  useEffect(() => {
+    // If we're loading and have a script ID, check status periodically
+    if (loading && scriptData && videoStatus) {
+      const statusCheckInterval = setInterval(async () => {
+        try {
+          const response = await checkVideoStatus(scriptData.script_id);
+
+          if (response.success && response.data.status === "completed") {
+            // Video is ready! Update the UI
+            setLoading(false);
+            setVideoStatus(null);
+            setVideoData(response.data);
+          }
+        } catch (err) {
+          console.error("Error checking video status:", err);
+        }
+      }, 5000); // Check every 5 seconds
+
+      return () => clearInterval(statusCheckInterval);
+    }
+  }, [loading, scriptData, videoStatus]);
 
   const fetchArticles = async () => {
     setLoading(true);
