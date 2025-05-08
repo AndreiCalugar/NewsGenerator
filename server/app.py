@@ -421,25 +421,36 @@ def generate_video_from_article():
         # Start video generation in background thread
         def generate_video_in_background():
             try:
-                print(f"[BG] Creating simple video for script: {script_data['title']}")
+                print(f"[BG THREAD] Starting video generation for: {script_data['title']}")
+                print(f"[BG THREAD] Using script with {len(script_data['script_text'])} characters")
                 
-                # Generate a simple video with just text
-                create_text_video(
+                # ... existing monitoring code ...
+                
+                # This is the line that gets the result
+                video_result = video_creator.create_video_from_text(
                     script_data['title'], 
-                    script_data['script_text'],
-                    video_path
+                    script_data['script_text']
                 )
                 
-                # Save to database
-                db.cursor.execute(
-                    "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                    (script_id, os.path.join('static', 'videos', os.path.basename(video_path)))
-                )
-                db.conn.commit()
-                print(f"[BG] Simple video created at: {video_path}")
+                print(f"[BG THREAD] Video generation completed: {video_result}")
+                
+                # Fix for tuple result - extract the main video path
+                if isinstance(video_result, tuple):
+                    video_path = video_result[0]  # Get just the main video path
+                else:
+                    video_path = video_result
+                
+                # Save to database if successful
+                if video_path:
+                    db.cursor.execute(
+                        "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
+                        (script_id, video_path)
+                    )
+                    db.conn.commit()
+                    print(f"[BG THREAD] Video saved to database: {video_path}")
                 
             except Exception as e:
-                print(f"[BG] Error creating simple video: {e}")
+                print(f"[BG THREAD] Error creating video: {e}")
                 traceback.print_exc()
                 
         thread = threading.Thread(target=generate_video_in_background)
