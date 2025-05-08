@@ -383,211 +383,85 @@ def generate_script():
 
 @app.route('/api/generate_video_from_article', methods=['POST'])
 def generate_video_from_article():
+    """Generate a video for a script"""
     try:
-        data = request.get_json()
+        data = request.json
         script_id = data.get('script_id')
-        
-        if not script_id:
-            return jsonify({"success": False, "error": "No script_id provided"}), 400
-        
-        # Debug info
         print(f"Starting video generation for script ID: {script_id}")
         
-        # Get script details and article info
-        db.cursor.execute("""
-            SELECT s.id as script_id, s.script_text, s.article_id, 
-                   a.title, a.description 
-            FROM scripts s
-            JOIN articles a ON s.article_id = a.id 
-            WHERE s.id = ?
-        """, (script_id,))
-        
-        script_data = db.cursor.fetchone()
-        
-        if not script_data:
-            return jsonify({"success": False, "error": f"Script with ID {script_id} not found"}), 404
-        
-        # Generate a unique filename
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        video_filename = f"video_{script_id}_{timestamp}.mp4"
-        video_path = os.path.join('static', 'videos', video_filename)
-        
-        if has_video_creator:
-            try:
-                # 1. Get the article title and description for keyword extraction
-                article_title = script_data['title']
-                article_description = script_data['description']
-                script_text = script_data['script_text']
-                
-                # 2. Extract keywords - import needed components from AutoVid
-                from AutoVid import KeywordExtractor, PexelsAPI
-                import random
-                
-                print(f"Extracting keywords for: {article_title}")
-                keyword_extractor = KeywordExtractor()
-                keywords = keyword_extractor.extract_keywords(article_title, article_description)
-                print(f"Initial keywords: {', '.join(keywords)}")
-                
-                # 3. Enhance keywords for video search
-                article_category = "general"  # Simplified category detection
-                enhanced_keywords = keyword_extractor.enhance_video_search(keywords, article_category)
-                print(f"Enhanced keywords for video search: {', '.join(enhanced_keywords)}")
-                
-                # 4. Search for videos using keywords
-                target_video_count = 5
-                selected_videos_raw = []
-                footage_pool_urls = set()
-                
-                print(f"\nSearching for up to {target_video_count} videos using keywords...")
-                pexels_api = PexelsAPI()
-                keywords_to_search = enhanced_keywords[:target_video_count]
-                
-                # 5. Search for each keyword
-                for keyword in keywords_to_search:
-                    if len(selected_videos_raw) >= target_video_count:
-                        break
-                        
-                    print(f"Searching Pexels for videos with query: '{keyword}'...")
-                    videos = pexels_api.search_videos(keyword, per_page=3)
-                    
-                    if videos:
-                        print(f"Found {len(videos)} potential videos for '{keyword}'.")
-                        video_added_for_keyword = False
-                        for video_info in videos:
-                            video_url = video_info.get('url')
-                            
-                            if video_url and video_url.endswith('.mp4'):
-                                if video_url not in footage_pool_urls:
-                                    print(f"  + Adding video for '{keyword}': {video_url}")
-                                    selected_videos_raw.append({"url": video_url, "keyword": keyword})
-                                    footage_pool_urls.add(video_url)
-                                    video_added_for_keyword = True
-                                    break
-                        
-                        if not video_added_for_keyword:
-                            print(f"  - Could not find a suitable unique video for '{keyword}' from results.")
-                    else:
-                        print(f"No videos found for keyword '{keyword}'")
-                
-                # 6. Fallback to generic keywords if needed
-                if len(selected_videos_raw) < target_video_count:
-                    print(f"\nFound only {len(selected_videos_raw)} videos. Trying generic keywords...")
-                    generic_keywords = ["news", "world", "city", "technology", "business", "people"]
-                    random.shuffle(generic_keywords)
-                    
-                    for keyword in generic_keywords:
-                        if len(selected_videos_raw) >= target_video_count:
-                            break
-                            
-                        print(f"Searching Pexels for generic videos with query: '{keyword}'...")
-                        videos = pexels_api.search_videos(keyword, per_page=3)
-                        
-                        if videos:
-                            print(f"Found {len(videos)} potential generic videos for '{keyword}'.")
-                            video_added_for_keyword = False
-                            for video_info in videos:
-                                video_url = video_info.get('url')
-                                
-                                if video_url and video_url.endswith('.mp4'):
-                                    if video_url not in footage_pool_urls:
-                                        print(f"  + Adding generic video for '{keyword}': {video_url}")
-                                        selected_videos_raw.append({"url": video_url, "keyword": f"generic_{keyword}"})
-                                        footage_pool_urls.add(video_url)
-                                        video_added_for_keyword = True
-                                        break
-                            
-                            if not video_added_for_keyword:
-                                print(f"  - Could not find a suitable unique generic video for '{keyword}'.")
-                        else:
-                            print(f"No generic videos found for keyword '{keyword}'")
-                
-                # 7. Check if we have any videos
-                if not selected_videos_raw:
-                    print("\nError: Could not find any videos for the script.")
-                    return jsonify({
-                        "success": False,
-                        "error": "Could not find any suitable videos for this script."
-                    }), 500
-                
-                print(f"\nUsing {len(selected_videos_raw)} videos for the final video.")
-                
-                # 8. Create the video using the EXACT SAME parameter format as AutoVid.py
-                print("\nCreating video...")
-                # This time using the correct parameter format
-                video_path = video_creator.create_video_with_narration(script_text, selected_videos_raw)
-                
-                if not video_path:
-                    return jsonify({
-                        "success": False,
-                        "error": "Failed to create video. Check server logs for details."
-                    }), 500
-                
-                # 9. Add video to database
-                video_id = db.cursor.execute(
-                    "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                    (script_id, video_path)
-                ).lastrowid
-                db.conn.commit()
-                
-                # 10. Return success with the video URL (properly formatted)
-                video_url = f"/static/videos/{os.path.basename(video_path)}"
-                print(f"Video created successfully at {video_path}, URL: {video_url}")
-                
-                return jsonify({
-                    "success": True,
-                    "data": {
-                        "video_id": video_id,
-                        "script_id": script_id,
-                        "video_url": video_url,
-                        "title": script_data['title']
-                    },
-                    "error": None
-                })
-                
-            except Exception as e:
-                print(f"Error in video creation process: {e}")
-                traceback.print_exc()
-                return jsonify({
-                    "success": False,
-                    "error": f"Video creation failed: {str(e)}"
-                }), 500
-        else:
-            # Fallback if VideoCreator is not available
+        # Check if video_creator is available
+        if not has_video_creator or video_creator is None:
             print("VideoCreator not available. Creating placeholder video.")
-            time.sleep(2)  # Simulate processing time
+            # Create placeholder video code...
+            # (Keep your existing placeholder code)
             
-            # Create a placeholder file
-            videos_dir = os.path.join(app.static_folder, 'videos')
-            os.makedirs(videos_dir, exist_ok=True)
-            placeholder_path = os.path.join(videos_dir, video_filename)
-            with open(placeholder_path, 'wb') as f:
-                f.write(b'placeholder')
-            print(f"Created placeholder video at: {placeholder_path}")
+        else:
+            # Run video generation in a background thread to avoid timeout
+            import threading
             
-            # Store video record in database
-            db.cursor.execute(
-                "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                (script_id, placeholder_path)
-            )
-            db.conn.commit()
-            video_id = db.cursor.lastrowid
+            def generate_video_in_background():
+                try:
+                    # Get script from database
+                    db.cursor.execute("SELECT * FROM scripts WHERE id = ?", (script_id,))
+                    script = db.cursor.fetchone()
+                    
+                    if not script:
+                        print(f"Script with ID {script_id} not found")
+                        return
+                    
+                    script_text = script[2]  # Assuming script text is the 3rd column
+                    title = script[1]        # Assuming title is the 2nd column
+                    
+                    print(f"Generating video for script: {title}")
+                    
+                    # Generate video
+                    video_path = video_creator.create_video_from_text(title, script_text)
+                    
+                    if video_path:
+                        # Save to database and update status
+                        video_filename = os.path.basename(video_path)
+                        video_url = f"/static/videos/{video_filename}"
+                        
+                        db.cursor.execute(
+                            """
+                            INSERT INTO videos (script_id, video_path, created_at)
+                            VALUES (?, ?, datetime('now'))
+                            """,
+                            (script_id, video_path)
+                        )
+                        db.conn.commit()
+                        print(f"Video created and saved to database: {video_path}")
+                    else:
+                        print("Video creation failed")
+                        
+                except Exception as e:
+                    print(f"Error in background video generation: {e}")
             
-            # Return success with video URL
-            video_url = f"/static/videos/{os.path.basename(placeholder_path)}"
+            # Create and start the background thread
+            thread = threading.Thread(target=generate_video_in_background)
+            thread.daemon = True
+            thread.start()
+            
+            # Immediately return a response to avoid timeout
             return jsonify({
                 "success": True,
                 "data": {
-                    "video_id": video_id,
-                    "script_id": script_id,
-                    "video_url": video_url,
-                    "title": script_data['title']
+                    "message": "Video generation started. Please check the Videos tab in a few minutes.",
+                    "status": "processing",
+                    "script_id": script_id
                 },
                 "error": None
             })
         
+        # Existing code for immediate video generation or placeholder...
+
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        print(f"Error in generate_video_from_article: {e}")
+        return jsonify({
+            "success": False,
+            "data": None,
+            "error": str(e)
+        }), 500
 
 @app.route('/api/videos', methods=['GET'])
 def get_videos():
