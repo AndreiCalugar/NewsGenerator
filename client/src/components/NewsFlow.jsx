@@ -101,29 +101,28 @@ const NewsFlow = ({ videoData, setVideoData }) => {
   };
 
   const handleCreateVideo = async () => {
-    if (!scriptData?.script_id) return;
+    if (!scriptData) return;
 
     setLoading(true);
     setError(null);
+    setTimeElapsed(0); // Reset timer
 
     try {
-      // Add clear message for user
-      console.log(
-        "Starting video generation - this may take several minutes..."
-      );
-
       const response = await generateVideoFromArticle(scriptData.script_id);
 
       if (response.success) {
         setVideoData(response.data);
       } else {
-        setError(response.error || "Failed to create video");
+        // Enhanced error message with more context
+        setError(
+          response.error ||
+            "Video generation can take several minutes. If you received a timeout, the video may still be generating in the background. Please check the Videos tab in a few minutes."
+        );
       }
     } catch (err) {
-      console.error("Video generation error:", err);
       setError(
-        err.error ||
-          "Failed to connect to server. Video generation may take several minutes - please try again."
+        "The server is processing your video. This can take up to 5 minutes. " +
+          "If the video doesn't appear here, please check the Videos tab later."
       );
     } finally {
       setLoading(false);

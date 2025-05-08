@@ -219,9 +219,16 @@ export const generateVideoFromArticle = async (scriptId) => {
   }
 
   try {
+    console.log(`Generating video for script ID: ${scriptId}`);
+    console.log(
+      "This may take several minutes. The app will update when complete."
+    );
+
+    // Use the longer timeout instance
     const response = await videoGenAxios.post("/generate_video_from_article", {
       script_id: scriptId,
     });
+
     return response.data;
   } catch (error) {
     console.error("Error generating video:", error);
@@ -229,7 +236,7 @@ export const generateVideoFromArticle = async (scriptId) => {
       success: false,
       error:
         error.response?.data?.error ||
-        "Could not connect to server. Video generation may take several minutes - please try again.",
+        "The video generation process takes several minutes. If you received a timeout, the video may still be generating. Please check the Videos tab in a few minutes.",
       data: null,
     };
   }
