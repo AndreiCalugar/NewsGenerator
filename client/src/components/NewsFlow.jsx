@@ -16,6 +16,7 @@ const NewsFlow = ({ videoData, setVideoData }) => {
   const [scriptLoading, setScriptLoading] = useState(false);
   const [timeElapsed, setTimeElapsed] = useState(0);
   const timerRef = useRef(null);
+  const [videoStatus, setVideoStatus] = useState(null);
 
   // Fetch articles on component mount
   useEffect(() => {
@@ -111,11 +112,10 @@ const NewsFlow = ({ videoData, setVideoData }) => {
 
       if (response.success) {
         if (response.data.status === "processing") {
-          // Background processing started
+          // Remove the alert and just show a message in the UI
           setLoading(false);
-          setError(null);
-          alert(
-            "Video generation has started! Please check the Videos tab in a few minutes to see your completed video."
+          setVideoStatus(
+            "Video generation is processing in the background. Please check the Videos tab in a few minutes."
           );
         } else {
           // Immediate video available
@@ -302,6 +302,12 @@ const NewsFlow = ({ videoData, setVideoData }) => {
       {error && (
         <div className="error-message">
           <p>{error}</p>
+        </div>
+      )}
+
+      {videoStatus && (
+        <div className="info-message">
+          <p>{videoStatus}</p>
         </div>
       )}
     </div>

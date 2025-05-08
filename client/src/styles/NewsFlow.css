@@ -1,0 +1,12 @@
+.info-message {
+  margin: 20px 0;
+  padding: 15px;
+  background-color: #e3f2fd;
+  border-left: 4px solid #2196f3;
+  border-radius: 4px;
+}
+
+.info-message p {
+  margin: 0;
+  color: #0d47a1;
+}

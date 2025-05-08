@@ -434,11 +434,10 @@ def generate_video_from_article():
                 if has_video_creator and video_creator is not None:
                     try:
                         print(f"Generating video for script: {script_data['title']}")
-                        # Use low memory mode
+                        # Remove the low_memory_mode parameter that's causing the error
                         video_path = video_creator.create_video_from_text(
                             script_data['title'], 
-                            script_data['script_text'],
-                            low_memory_mode=True  # Add this param to your function
+                            script_data['script_text']
                         )
                         
                         # Save to database if successful
