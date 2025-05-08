@@ -8,6 +8,9 @@ import json
 import sqlite3
 from datetime import datetime
 import time
+import threading
+import subprocess
+import tempfile
 
 # Import the specific classes we need from AutoVid
 from AutoVid import ScriptGenerator
@@ -383,8 +386,9 @@ def generate_script():
 
 @app.route('/api/generate_video_from_article', methods=['POST'])
 def generate_video_from_article():
+    """Generate a video for a script"""
     try:
-        data = request.get_json()
+        data = request.json
         script_id = data.get('script_id')
         
         if not script_id:
@@ -411,126 +415,79 @@ def generate_video_from_article():
         # Create a unique video filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         video_filename = f"video_{script_id}_{timestamp}.mp4"
+        videos_dir = os.path.join(os.getcwd(), 'server', 'static', 'videos')
+        video_path = os.path.join(videos_dir, video_filename)
         
-        # Start background processing
-        import threading
-        
+        # Start video generation in background thread
         def generate_video_in_background():
             try:
-                # Save script to a text file for reference
-                script_file = os.path.join(os.getcwd(), 'server', 'static', 'videos', f"{os.path.splitext(video_filename)[0]}_script.txt")
-                os.makedirs(os.path.dirname(script_file), exist_ok=True)
+                print(f"[BG] Creating simple video for script: {script_data['title']}")
                 
-                with open(script_file, 'w', encoding='utf-8') as f:
-                    f.write(script_data['script_text'])
+                # Generate a simple video with just text
+                create_text_video(
+                    script_data['title'], 
+                    script_data['script_text'],
+                    video_path
+                )
                 
-                print(f"Script saved to {script_file}")
+                # Save to database
+                db.cursor.execute(
+                    "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
+                    (script_id, os.path.join('static', 'videos', os.path.basename(video_path)))
+                )
+                db.conn.commit()
+                print(f"[BG] Simple video created at: {video_path}")
                 
-                # Get full path for video
-                videos_dir = os.path.join(os.getcwd(), 'server', 'static', 'videos')
-                video_path = os.path.join(videos_dir, video_filename)
-                
-                # Create the video if video_creator is available
-                if has_video_creator and video_creator is not None:
-                    try:
-                        print(f"[BG THREAD] Starting video generation for: {script_data['title']}")
-                        print(f"[BG THREAD] Using script with {len(script_data['script_text'])} characters")
-                        
-                        # Add 10 second timeout monitoring
-                        import time
-                        start_time = time.time()
-                        last_update = start_time
-                        
-                        def progress_callback():
-                            nonlocal last_update
-                            current_time = time.time()
-                            if current_time - last_update > 10:
-                                print(f"[BG THREAD] Still processing video at {int(current_time - start_time)} seconds...")
-                                last_update = current_time
-                        
-                        # Start progress monitoring in a separate thread
-                        monitor_thread = threading.Thread(target=lambda: [progress_callback() or time.sleep(5) for _ in range(100)])
-                        monitor_thread.daemon = True
-                        monitor_thread.start()
-                        
-                        # Attempt to generate video with explicit temporary path
-                        temp_video_path = os.path.join(videos_dir, f"temp_{video_filename}")
-                        print(f"[BG THREAD] Will save temporary video to: {temp_video_path}")
-                        
-                        video_path = video_creator.create_video_from_text(
-                            script_data['title'], 
-                            script_data['script_text']
-                        )
-                        
-                        print(f"[BG THREAD] Video generation completed: {video_path}")
-                        
-                        # Save to database if successful
-                        if video_path:
-                            db.cursor.execute(
-                                "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                                (script_id, video_path)
-                            )
-                            db.conn.commit()
-                            print(f"[BG THREAD] Video saved to database: {video_path}")
-                        else:
-                            # If video creation failed, create a placeholder
-                            with open(video_path, 'wb') as f:
-                                f.write(b'placeholder')
-                            print(f"[BG THREAD] Created placeholder video at: {video_path}")
-                            
-                            db.cursor.execute(
-                                "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                                (script_id, video_path)
-                            )
-                            db.conn.commit()
-                    except Exception as e:
-                        print(f"[BG THREAD] Error in video creation: {e}")
-                        traceback.print_exc()  # Print the full error stack trace
-                        
-                        # Create placeholder on error
-                        with open(video_path, 'wb') as f:
-                            f.write(b'placeholder')
-                        print(f"[BG THREAD] Created placeholder video after error at: {video_path}")
-                        
-                        db.cursor.execute(
-                            "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                            (script_id, video_path)
-                        )
-                        db.conn.commit()
-                else:
-                    # Create placeholder if video_creator not available
-                    with open(video_path, 'wb') as f:
-                        f.write(b'placeholder')
-                    print(f"Created placeholder video at: {video_path}")
-                    
-                    db.cursor.execute(
-                        "INSERT INTO videos (script_id, video_path, created_at) VALUES (?, ?, datetime('now'))",
-                        (script_id, video_path)
-                    )
-                    db.conn.commit()
-            
             except Exception as e:
-                print(f"Error in background video generation: {e}")
-        
-        # Start generation in background
+                print(f"[BG] Error creating simple video: {e}")
+                traceback.print_exc()
+                
         thread = threading.Thread(target=generate_video_in_background)
         thread.daemon = True
         thread.start()
         
-        # Return immediate response with status
+        # Return immediate response
         return jsonify({
             "success": True,
             "data": {
                 "status": "processing",
-                "message": "Video generation started in background. Check Videos tab in a few minutes.",
-                "script_id": script_id
-            },
-            "error": None
+                "message": "Video generation started"
+            }
         })
         
     except Exception as e:
+        print(f"Error in generate_video_from_article: {e}")
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+def create_text_video(title, text, output_path):
+    """Create a very simple video with text using ffmpeg"""
+    try:
+        print(f"Creating text video at: {output_path}")
+        
+        # Create temp directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Generate a basic image with text
+            image_path = os.path.join(temp_dir, "text.png")
+            
+            # Use ffmpeg to create image with text
+            text_cmd = [
+                'ffmpeg', '-y',
+                '-f', 'lavfi',
+                '-i', f'color=c=black:s=1280x720:d=10',
+                '-vf', f'drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text={title}\\n\\n{text}:fontcolor=white:fontsize=24:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=10',
+                '-t', '10',
+                output_path
+            ]
+            
+            subprocess.run(text_cmd, check=True)
+            print(f"Created simple text video at: {output_path}")
+            return output_path
+            
+    except Exception as e:
+        print(f"Error creating text video: {e}")
+        traceback.print_exc()
+        return None
 
 @app.route('/api/videos', methods=['GET'])
 def get_videos():
@@ -716,6 +673,54 @@ def get_video_status(script_id):
     except Exception as e:
         print(f"Error checking video status: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/debug/fonts', methods=['GET'])
+def debug_fonts():
+    """List available fonts on the system"""
+    try:
+        result = subprocess.run(['find', '/', '-name', '*.ttf', '-o', '-name', '*.TTF'], 
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        fonts = result.stdout.decode('utf-8').split('\n')
+        return jsonify({"available_fonts": fonts})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route('/api/create_test_video', methods=['GET'])
+def create_test_video():
+    """Create a test video to verify ffmpeg works"""
+    try:
+        output_dir = os.path.join(os.getcwd(), 'server', 'static', 'videos')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, f"test_video_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4")
+        
+        # Super simple command to generate a 5-second video
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'lavfi',
+            '-i', 'color=c=blue:s=640x360:d=5',
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True)
+        
+        if result.returncode == 0:
+            video_url = f"/static/videos/{os.path.basename(output_path)}"
+            return jsonify({
+                "success": True, 
+                "message": "Test video created", 
+                "video_url": video_url
+            })
+        else:
+            return jsonify({
+                "success": False, 
+                "error": f"Failed to create test video: {result.stderr.decode('utf-8')}"
+            })
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
