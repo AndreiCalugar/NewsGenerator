@@ -106,28 +106,31 @@ const NewsFlow = ({ videoData, setVideoData }) => {
 
     setLoading(true);
     setError(null);
+    setVideoStatus(null); // Reset any previous status message
 
     try {
       const response = await generateVideoFromArticle(scriptData.script_id);
 
       if (response.success) {
         if (response.data.status === "processing") {
-          // Remove the alert and just show a message in the UI
-          setLoading(false);
+          // Keep loading indicator visible with timer but show processing message
+          // Don't set loading to false here
           setVideoStatus(
-            "Video generation is processing in the background. Please check the Videos tab in a few minutes."
+            "Video generation has started. This can take several minutes. The progress bar will continue to run while processing."
           );
+          // Keep setLoading(true) to maintain the timer and loader
         } else {
-          // Immediate video available
+          // Only if we get a direct video response, stop loading
+          setLoading(false);
           setVideoData(response.data);
         }
       } else {
+        setLoading(false);
         setError(response.error || "Failed to create video");
       }
     } catch (err) {
-      setError("Error connecting to server. Please try again.");
-    } finally {
       setLoading(false);
+      setError("Error connecting to server. Please try again.");
     }
   };
 
@@ -285,8 +288,8 @@ const NewsFlow = ({ videoData, setVideoData }) => {
         </div>
       )}
 
-      {/* Loading Indicator */}
-      {loading && !videoData && (
+      {/* Loading Indicator - Always show when loading is true */}
+      {loading && (
         <div className="loading-indicator">
           <p>Creating video... Time elapsed: {formatTime(timeElapsed)}</p>
           <p>
@@ -298,16 +301,17 @@ const NewsFlow = ({ videoData, setVideoData }) => {
         </div>
       )}
 
+      {/* Status message - Can show simultaneously with loading indicator */}
+      {videoStatus && (
+        <div className="info-message">
+          <p>{videoStatus}</p>
+        </div>
+      )}
+
       {/* Error Display */}
       {error && (
         <div className="error-message">
           <p>{error}</p>
-        </div>
-      )}
-
-      {videoStatus && (
-        <div className="info-message">
-          <p>{videoStatus}</p>
         </div>
       )}
     </div>

@@ -1,9 +1,22 @@
+.loading-indicator {
+  margin: 20px 0;
+  padding: 15px;
+  background-color: #fff3e0;
+  border-left: 4px solid #ff9800;
+  border-radius: 4px;
+}
+
 .info-message {
   margin: 20px 0;
   padding: 15px;
   background-color: #e3f2fd;
   border-left: 4px solid #2196f3;
   border-radius: 4px;
+}
+
+/* Add some space between the two if they appear together */
+.loading-indicator + .info-message {
+  margin-top: 10px;
 }
 
 .info-message p {
