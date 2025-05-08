@@ -52,26 +52,63 @@ const NewsFlow = ({ videoData, setVideoData }) => {
 
   // Add a useEffect to check video status if we're in processing state
   useEffect(() => {
-    // If we're loading and have a script ID, check status periodically
-    if (loading && scriptData && videoStatus) {
+    // If we're in loading state with a script ID, start checking status
+    if (loading && scriptData) {
+      console.log("Setting up video status check interval");
+
+      // Set message about expected time
+      setVideoStatus(
+        "Video generation takes approximately 15-20 minutes. Please be patient or check the Videos tab later."
+      );
+
+      // Check every 15 seconds for up to 25 minutes (100 attempts)
+      let checkCount = 0;
+      const MAX_CHECKS = 100;
+
       const statusCheckInterval = setInterval(async () => {
         try {
+          checkCount++;
+          console.log(
+            `Checking video status (attempt ${checkCount}/${MAX_CHECKS})...`
+          );
+
           const response = await checkVideoStatus(scriptData.script_id);
 
-          if (response.success && response.data.status === "completed") {
-            // Video is ready! Update the UI
-            setLoading(false);
-            setVideoStatus(null);
-            setVideoData(response.data);
+          if (response.success) {
+            if (response.data.status === "completed") {
+              console.log("Video completed! Updating UI...");
+              // Video is ready!
+              setLoading(false);
+              setVideoStatus(null);
+              setVideoData(response.data);
+              // Clear the interval
+              clearInterval(statusCheckInterval);
+            } else {
+              // Still processing - update status message with check count
+              setVideoStatus(
+                `Video is still processing. This can take 15-20 minutes. Check attempt: ${checkCount}/${MAX_CHECKS}`
+              );
+            }
+          }
+
+          // If we've reached max checks, stop checking but keep loading state
+          if (checkCount >= MAX_CHECKS) {
+            console.log(
+              "Reached maximum status checks. Stopping automatic checks."
+            );
+            setVideoStatus(
+              "Video may still be processing. Please check the Videos tab later."
+            );
+            clearInterval(statusCheckInterval);
           }
         } catch (err) {
           console.error("Error checking video status:", err);
         }
-      }, 5000); // Check every 5 seconds
+      }, 15000); // Check every 15 seconds
 
       return () => clearInterval(statusCheckInterval);
     }
-  }, [loading, scriptData, videoStatus]);
+  }, [loading, scriptData]);
 
   const fetchArticles = async () => {
     setLoading(true);
@@ -196,6 +233,34 @@ const NewsFlow = ({ videoData, setVideoData }) => {
     setError(null);
   };
 
+  // Add this function to your component
+  const handleManualCheck = async () => {
+    if (!scriptData) return;
+
+    try {
+      setVideoStatus("Manually checking video status...");
+      const response = await checkVideoStatus(scriptData.script_id);
+
+      if (response.success) {
+        if (response.data.status === "completed") {
+          // Video is ready!
+          setLoading(false);
+          setVideoStatus(null);
+          setVideoData(response.data);
+        } else {
+          // Still processing
+          setVideoStatus(
+            `Video is still processing. Please check again later or visit the Videos tab.`
+          );
+        }
+      } else {
+        setError(response.error || "Failed to check video status");
+      }
+    } catch (err) {
+      setError("Error connecting to server. Please try again.");
+    }
+  };
+
   return (
     <div className="news-flow">
       <h2 className="section-headline">
@@ -317,11 +382,18 @@ const NewsFlow = ({ videoData, setVideoData }) => {
         <div className="loading-indicator">
           <p>Creating video... Time elapsed: {formatTime(timeElapsed)}</p>
           <p>
-            This process can take several minutes. The longer the text, the more
-            time it takes.
+            This process can take 15-20 minutes on our server. The longer the
+            text, the more time it takes.
           </p>
           <p>Please don't close the browser window.</p>
           <div className="progress-animation"></div>
+
+          {/* Add manual check button */}
+          {timeElapsed > 300 && ( // Only show after 5 minutes
+            <button className="manual-check-button" onClick={handleManualCheck}>
+              Check If Video Is Ready
+            </button>
+          )}
         </div>
       )}
 
@@ -329,6 +401,16 @@ const NewsFlow = ({ videoData, setVideoData }) => {
       {videoStatus && (
         <div className="info-message">
           <p>{videoStatus}</p>
+          <div className="time-estimate">
+            <p>Expected completion: ~15-20 minutes from start</p>
+            <p>Elapsed time: {formatTime(timeElapsed)}</p>
+            {timeElapsed > 900 && ( // 15 minutes
+              <p className="highlight">
+                Video should be ready soon. Please check the Videos tab if you
+                don't see it update automatically.
+              </p>
+            )}
+          </div>
         </div>
       )}
 
